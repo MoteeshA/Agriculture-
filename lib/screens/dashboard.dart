@@ -1,8 +1,120 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:geolocator/geolocator.dart';
 
-class DashboardPage extends StatelessWidget {
+class DashboardPage extends StatefulWidget {
   static const route = '/dashboard';
   const DashboardPage({super.key});
+
+  // <-- FIX: keep _todo as a static on DashboardPage
+  static void _todo(BuildContext context, String name) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$name — screen coming soon')),
+    );
+  }
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage> {
+  // Weather data state
+  Map<String, dynamic>? _weatherData;
+  bool _isLoadingWeather = false;
+  String _weatherError = '';
+
+  // API key for OpenWeatherMap
+  final String _apiKey = '8d6127e074f05533890c5b550b4c0e2b';
+
+  @override
+  void initState() {
+    super.initState();
+    _getCurrentLocationWeather();
+  }
+
+  // Function to get current location and fetch weather
+  Future<void> _getCurrentLocationWeather() async {
+    setState(() {
+      _isLoadingWeather = true;
+      _weatherError = '';
+    });
+
+    try {
+      // Ensure location services are enabled
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          _weatherError = 'Location services are disabled';
+          _isLoadingWeather = false;
+        });
+        return;
+      }
+
+      // Check location permission
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() {
+            _weatherError = 'Location permission denied';
+            _isLoadingWeather = false;
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() {
+          _weatherError = 'Location permissions are permanently denied';
+          _isLoadingWeather = false;
+        });
+        return;
+      }
+
+      // Get current position
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+      );
+
+      // Fetch weather data
+      await _fetchWeatherData(position.latitude, position.longitude);
+    } catch (e) {
+      setState(() {
+        _weatherError = 'Failed to get location: $e';
+        _isLoadingWeather = false;
+      });
+    }
+  }
+
+  // Function to fetch weather data from OpenWeatherMap API
+  Future<void> _fetchWeatherData(double lat, double lon) async {
+    final url = Uri.parse(
+      'https://api.openweathermap.org/data/2.5/weather?lat=$lat&lon=$lon&appid=$_apiKey&units=metric',
+    );
+
+    try {
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _weatherData = json.decode(response.body);
+          _isLoadingWeather = false;
+        });
+      } else {
+        setState(() {
+          _weatherError =
+          'Failed to load weather data: ${response.statusCode}';
+          _isLoadingWeather = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _weatherError = 'Failed to load weather data: $e';
+        _isLoadingWeather = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,6 +156,7 @@ class DashboardPage extends StatelessWidget {
                   );
                   break;
                 case 'refresh':
+                  _getCurrentLocationWeather();
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Refreshing...')),
                   );
@@ -91,7 +204,6 @@ class DashboardPage extends StatelessWidget {
               const SizedBox(height: 12),
               _FeatureGrid(
                 items: [
-                  // EXACT features you mentioned
                   FeatureItem(
                     title: 'Crop Prices',
                     subtitle: 'Mandi & forecast',
@@ -104,42 +216,52 @@ class DashboardPage extends StatelessWidget {
                     subtitle: 'Tractor, drone…',
                     icon: Icons.agriculture_outlined,
                     color: Colors.blue,
-                    onTap: () => _todo(context, 'Equipment Renting'),
+                    onTap: () =>
+                        DashboardPage._todo(context, 'Equipment Renting'),
                   ),
                   FeatureItem(
                     title: 'Disease Detect',
                     subtitle: 'Upload leaf photo',
                     icon: Icons.health_and_safety_outlined,
                     color: Colors.orange,
-                    onTap: () => _todo(context, 'Crop Disease Detection'),
+                    onTap: () =>
+                        DashboardPage._todo(context, 'Crop Disease Detection'),
                   ),
                   FeatureItem(
                     title: 'Growth Monitor',
                     subtitle: 'Yield & weather',
                     icon: Icons.monitor_heart_outlined,
                     color: Colors.purple,
-                    onTap: () => _todo(context, 'Growth Monitoring'),
+                    onTap: () =>
+                        DashboardPage._todo(context, 'Growth Monitoring'),
                   ),
                   FeatureItem(
                     title: 'Govt Schemes',
                     subtitle: 'Eligibility & apply',
                     icon: Icons.assignment_turned_in_outlined,
                     color: Colors.teal,
-                    onTap: () => _todo(context, 'Government Schemes'),
+                    onTap: () =>
+                        DashboardPage._todo(context, 'Government Schemes'),
                   ),
                   FeatureItem(
                     title: 'Community',
                     subtitle: 'Ask & share',
                     icon: Icons.forum_outlined,
                     color: Colors.indigo,
-                    onTap: () => _todo(context, 'Community Q&A'),
+                    onTap: () =>
+                        DashboardPage._todo(context, 'Community Q&A'),
                   ),
                 ],
               ),
               const SizedBox(height: 20),
 
-              // Weather & Advisory Section
-              const _WeatherAdvisoryCard(),
+              // Weather & Advisory Section - uses real data
+              _WeatherAdvisoryCard(
+                weatherData: _weatherData,
+                isLoading: _isLoadingWeather,
+                error: _weatherError,
+                onRefresh: _getCurrentLocationWeather,
+              ),
               const SizedBox(height: 20),
 
               // Market Updates
@@ -155,12 +277,6 @@ class DashboardPage extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-
-  static void _todo(BuildContext context, String name) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$name — screen coming soon')),
     );
   }
 }
@@ -236,8 +352,8 @@ class _DashboardDrawer extends StatelessWidget {
                     Icon(Icons.agriculture, size: 50, color: Colors.green),
                     SizedBox(height: 8),
                     Text('AgriMitra',
-                        style:
-                        TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                        style: TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold)),
                     Text('Farmer\'s Companion'),
                   ],
                 ),
@@ -399,8 +515,7 @@ class _StatItem extends StatelessWidget {
           Icon(icon, color: color),
           const SizedBox(height: 8),
           Text(value,
-              style:
-              const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 4),
           Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
         ],
@@ -409,8 +524,63 @@ class _StatItem extends StatelessWidget {
   }
 }
 
+// Weather & Advisory Card (uses fetched data)
 class _WeatherAdvisoryCard extends StatelessWidget {
-  const _WeatherAdvisoryCard();
+  final Map<String, dynamic>? weatherData;
+  final bool isLoading;
+  final String error;
+  final VoidCallback onRefresh;
+
+  const _WeatherAdvisoryCard({
+    required this.weatherData,
+    required this.isLoading,
+    required this.error,
+    required this.onRefresh,
+  });
+
+  String _getWeatherAdvisory(Map<String, dynamic>? weatherData) {
+    if (weatherData == null) return 'Loading weather data...';
+
+    final main = weatherData['main'];
+    final weather = weatherData['weather'][0];
+    final int temp = (main['temp'] as num).round();
+    final int humidity = (main['humidity'] as num).round();
+    final String condition = (weather['main'] as String?) ?? '';
+
+    if (condition == 'Rain') {
+      return 'Advisory: Rain expected. Postpone field activities and ensure proper drainage.';
+    } else if (temp > 35) {
+      return 'Advisory: High temperature. Irrigate crops in the early morning or late evening.';
+    } else if (humidity < 30) {
+      return 'Advisory: Low humidity. Consider additional irrigation to prevent soil moisture loss.';
+    } else if (temp < 10) {
+      return 'Advisory: Cold temperatures. Protect sensitive crops from potential frost.';
+    } else {
+      return 'Advisory: Favorable weather conditions for most farming activities.';
+    }
+  }
+
+  String _getWeatherIcon(String condition) {
+    switch (condition) {
+      case 'Clear':
+        return '☀️';
+      case 'Clouds':
+        return '☁️';
+      case 'Rain':
+        return '🌧️';
+      case 'Drizzle':
+        return '🌦️';
+      case 'Thunderstorm':
+        return '⛈️';
+      case 'Snow':
+        return '❄️';
+      case 'Mist':
+      case 'Fog':
+        return '🌫️';
+      default:
+        return '🌤️';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -423,40 +593,80 @@ class _WeatherAdvisoryCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Icon(Icons.wb_sunny, color: Colors.orange),
-                const SizedBox(width: 8),
-                Text(
-                  'Weather & Advisory',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                Row(
+                  children: [
+                    const Icon(Icons.wb_sunny, color: Colors.orange),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Weather & Advisory',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: onRefresh,
+                  iconSize: 20,
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            const Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Today: Sunny',
-                    style: TextStyle(fontWeight: FontWeight.w500)),
-                Text('28°C / 18°C', style: TextStyle(color: Colors.grey)),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const LinearProgressIndicator(
-              value: 0.3,
-              backgroundColor: Colors.grey,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-            ),
-            const SizedBox(height: 4),
-            const Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Rain probability: 30%'),
-                Text('Humidity: 65%'),
-              ],
-            ),
+
+            if (isLoading)
+              const Center(child: CircularProgressIndicator())
+            else if (error.isNotEmpty)
+              Text('Error: $error', style: const TextStyle(color: Colors.red))
+            else if (weatherData != null)
+                Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '${weatherData!['name'] ?? '—'}',
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                        Text(
+                          '${_getWeatherIcon((weatherData!['weather'][0]['main'] as String?) ?? '')} ${weatherData!['weather'][0]['main']}',
+                          style: const TextStyle(fontSize: 16),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '${(weatherData!['main']['temp'] as num).round()}°C',
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          'Feels like: ${(weatherData!['main']['feels_like'] as num).round()}°C',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Humidity: ${(weatherData!['main']['humidity'] as num).round()}%'),
+                        Text('Wind: ${(weatherData!['wind']['speed'] as num)} m/s'),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                )
+              else
+                const Text('No weather data available'),
+
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
@@ -464,9 +674,9 @@ class _WeatherAdvisoryCard extends StatelessWidget {
                 color: Colors.orange[50],
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text(
-                'Advisory: Ideal conditions for wheat harvesting. Consider irrigating in the evening.',
-                style: TextStyle(fontSize: 13),
+              child: Text(
+                _getWeatherAdvisory(weatherData),
+                style: const TextStyle(fontSize: 13),
               ),
             ),
           ],
@@ -526,8 +736,7 @@ class _MarketItem extends StatelessWidget {
           Text(crop, style: const TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 8),
           Text(price,
-              style:
-              const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           Text(
             change,

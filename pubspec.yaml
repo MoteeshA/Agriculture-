@@ -13,6 +13,7 @@ dependencies:
   path: ^1.9.0
   crypto: ^3.0.3
   http: ^1.2.1   # required for API calls
+  geolocator: ^11.0.0  # added for location services
 
 dev_dependencies:
   flutter_test:
