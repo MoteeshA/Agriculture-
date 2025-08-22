@@ -19,21 +19,45 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  // Weather data state
+  // ---------------- Weather state ----------------
   Map<String, dynamic>? _weatherData;
   bool _isLoadingWeather = false;
   String _weatherError = '';
+  final String _owmApiKey = '8d6127e074f05533890c5b550b4c0e2b';
 
-  // API key for OpenWeatherMap
-  final String _apiKey = '8d6127e074f05533890c5b550b4c0e2b';
+  // ---------------- Market ticker state ----------------
+  // Uses data.gov.in (same as your CropPricesPage resource)
+  static const String _govApiKey =
+      '579b464db66ec23bdd0000010baed15d539144fa62035eb3cd19e551';
+
+  // Variety-wise daily market prices dataset (you used this on CropPricesPage)
+  static const String _resourceUrl =
+      'https://api.data.gov.in/resource/35985678-0d79-46b4-9ed6-6f13308a1d24';
+
+  // Choose any 4 commodities you want on the dashboard (keep your originals)
+  final List<String> _dashboardCommodities = const [
+    'Wheat',
+    'Rice',
+    'Cotton',
+    'Soybean',
+  ];
+
+  // If you want to pin to a region, set these (or leave null for all-India)
+  final String? _pinState = null; // e.g., 'Karnataka'
+  final String? _pinMarket = null; // e.g., 'Binny Mill (F&V), Bangalore'
+
+  bool _isLoadingTickers = false;
+  String _tickerError = '';
+  List<_MarketTicker> _tickers = [];
 
   @override
   void initState() {
     super.initState();
     _getCurrentLocationWeather();
+    _loadMarketTickers();
   }
 
-  // Function to get current location and fetch weather
+  // ---------------- Weather ----------------
   Future<void> _getCurrentLocationWeather() async {
     setState(() {
       _isLoadingWeather = true;
@@ -41,7 +65,6 @@ class _DashboardPageState extends State<DashboardPage> {
     });
 
     try {
-      // Ensure location services are enabled
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         setState(() {
@@ -51,7 +74,6 @@ class _DashboardPageState extends State<DashboardPage> {
         return;
       }
 
-      // Check location permission
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -63,7 +85,6 @@ class _DashboardPageState extends State<DashboardPage> {
           return;
         }
       }
-
       if (permission == LocationPermission.deniedForever) {
         setState(() {
           _weatherError = 'Location permissions are permanently denied';
@@ -72,13 +93,11 @@ class _DashboardPageState extends State<DashboardPage> {
         return;
       }
 
-      // Get current position
-      Position position = await Geolocator.getCurrentPosition(
+      final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.medium,
       );
 
-      // Fetch weather data
-      await _fetchWeatherData(position.latitude, position.longitude);
+      await _fetchWeatherData(pos.latitude, pos.longitude);
     } catch (e) {
       setState(() {
         _weatherError = 'Failed to get location: $e';
@@ -87,24 +106,20 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  // Function to fetch weather data from OpenWeatherMap API
   Future<void> _fetchWeatherData(double lat, double lon) async {
     final url = Uri.parse(
-      'https://api.openweathermap.org/data/2.5/weather?lat=$lat&lon=$lon&appid=$_apiKey&units=metric',
+      'https://api.openweathermap.org/data/2.5/weather?lat=$lat&lon=$lon&appid=$_owmApiKey&units=metric',
     );
-
     try {
-      final response = await http.get(url);
-
-      if (response.statusCode == 200) {
+      final res = await http.get(url);
+      if (res.statusCode == 200) {
         setState(() {
-          _weatherData = json.decode(response.body);
+          _weatherData = json.decode(res.body);
           _isLoadingWeather = false;
         });
       } else {
         setState(() {
-          _weatherError =
-          'Failed to load weather data: ${response.statusCode}';
+          _weatherError = 'Failed to load weather data: ${res.statusCode}';
           _isLoadingWeather = false;
         });
       }
@@ -116,6 +131,189 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
+  // ---------------- Market tickers (data.gov.in) ----------------
+  Future<void> _loadMarketTickers() async {
+    setState(() {
+      _isLoadingTickers = true;
+      _tickerError = '';
+      _tickers = [];
+    });
+
+    try {
+      // Fetch latest (and previous) for each commodity in parallel
+      final futures = _dashboardCommodities.map((c) =>
+          _fetchLatestTicker(commodity: c, state: _pinState, market: _pinMarket));
+      final results = await Future.wait(futures);
+
+      final nonNull = results.whereType<_MarketTicker>().toList();
+
+      if (nonNull.isEmpty) {
+        setState(() {
+          _tickerError =
+          'No market rows returned. Try different commodities or remove region filters.';
+          _isLoadingTickers = false;
+        });
+        return;
+      }
+
+      // Keep exactly 4 tiles (pad with best-effort if fewer)
+      nonNull.sort((a, b) => a.commodity.compareTo(b.commodity));
+      setState(() {
+        _tickers = nonNull.take(4).toList();
+        _isLoadingTickers = false;
+      });
+    } catch (e) {
+      setState(() {
+        _tickerError = 'Error loading market data: $e';
+        _isLoadingTickers = false;
+      });
+    }
+  }
+
+  // Pull top-most (latest) record for a commodity (+ optional region),
+  // also try to compute % change vs previous record date.
+  Future<_MarketTicker?> _fetchLatestTicker({
+    required String commodity,
+    String? state,
+    String? market,
+  }) async {
+    // Build params for latest
+    final latestParams = <String, String>{
+      'api-key': _govApiKey,
+      'format': 'json',
+      'limit': '50',
+      'offset': '0',
+      'sort[Arrival_Date]': 'desc',
+      'filters[Commodity]': commodity,
+    };
+    if (state != null && state.trim().isNotEmpty) {
+      latestParams['filters[State]'] = state.trim();
+    }
+    if (market != null && market.trim().isNotEmpty) {
+      latestParams['filters[Market]'] = market.trim();
+    }
+
+    final latestUri = Uri.parse(_resourceUrl).replace(queryParameters: latestParams);
+    final latestRes = await http.get(latestUri).timeout(const Duration(seconds: 30));
+    if (latestRes.statusCode != 200) return null;
+
+    final latestBody = json.decode(latestRes.body) as Map<String, dynamic>;
+    final latestCount = (latestBody['count'] ?? 0) as int;
+    final latestMsg = (latestBody['message'] ?? '').toString().toLowerCase();
+    if (latestCount == 0 && latestMsg.contains('resource id')) return null;
+
+    final latestRecords = (latestBody['records'] ?? []) as List;
+    if (latestRecords.isEmpty) return null;
+
+    Map<String, dynamic>? pick;
+    // Prefer a row that has Modal_Price populated
+    for (final r in latestRecords) {
+      final m = (r as Map<String, dynamic>)['Modal_Price'];
+      if (m != null && m.toString().trim().isNotEmpty) {
+        pick = r as Map<String, dynamic>;
+        break;
+      }
+    }
+    pick ??= latestRecords.first as Map<String, dynamic>;
+
+    // Parse fields
+    int _toInt(dynamic v) {
+      if (v == null) return 0;
+      if (v is int) return v;
+      return int.tryParse(v.toString().trim()) ?? 0;
+    }
+
+    final latestModal = _toInt(pick['Modal_Price']);
+    final marketName = (pick['Market'] ?? '').toString();
+    final stateName = (pick['State'] ?? '').toString();
+    final dateStr = (pick['Arrival_Date'] ?? '').toString(); // dd/MM/yyyy
+    final prevChange = await _computeChangePct(
+      commodity: commodity,
+      state: state,
+      market: market,
+      excludeDate: dateStr,
+    );
+
+    return _MarketTicker(
+      commodity: commodity,
+      priceINR: latestModal,
+      changePct: prevChange,
+      market: marketName,
+      state: stateName,
+      date: dateStr,
+    );
+  }
+
+  // Find a previous-day (or older) record to compute % change.
+  // excludeDate is latest date string (dd/MM/yyyy); we skip that exact date.
+  Future<double?> _computeChangePct({
+    required String commodity,
+    String? state,
+    String? market,
+    required String excludeDate,
+  }) async {
+    final params = <String, String>{
+      'api-key': _govApiKey,
+      'format': 'json',
+      'limit': '100',
+      'offset': '0',
+      'sort[Arrival_Date]': 'desc',
+      'filters[Commodity]': commodity,
+    };
+    if (state != null && state.trim().isNotEmpty) {
+      params['filters[State]'] = state.trim();
+    }
+    if (market != null && market.trim().isNotEmpty) {
+      params['filters[Market]'] = market.trim();
+    }
+
+    final uri = Uri.parse(_resourceUrl).replace(queryParameters: params);
+    final res = await http.get(uri).timeout(const Duration(seconds: 30));
+    if (res.statusCode != 200) return null;
+
+    final body = json.decode(res.body) as Map<String, dynamic>;
+    final recs = (body['records'] ?? []) as List;
+    if (recs.length < 2) return null;
+
+    int _toInt(dynamic v) {
+      if (v == null) return 0;
+      if (v is int) return v;
+      return int.tryParse(v.toString().trim()) ?? 0;
+    }
+
+    // Pick first record that is from a different date than excludeDate
+    Map<String, dynamic>? prev;
+    for (final r in recs) {
+      final m = (r as Map<String, dynamic>)['Modal_Price'];
+      final d = (r['Arrival_Date'] ?? '').toString();
+      if (d != excludeDate && m != null && m.toString().trim().isNotEmpty) {
+        prev = r as Map<String, dynamic>;
+        break;
+      }
+    }
+    if (prev == null) return null;
+
+    // We need latest modal too; take first record with modal
+    Map<String, dynamic>? latest;
+    for (final r in recs) {
+      final m = (r as Map<String, dynamic>)['Modal_Price'];
+      final d = (r['Arrival_Date'] ?? '').toString();
+      if (d == excludeDate && m != null && m.toString().trim().isNotEmpty) {
+        latest = r as Map<String, dynamic>;
+        break;
+      }
+    }
+    latest ??= recs.first as Map<String, dynamic>;
+
+    final latestModal = _toInt(latest['Modal_Price']);
+    final prevModal = _toInt(prev['Modal_Price']);
+    if (latestModal == 0 || prevModal == 0) return null;
+
+    final pct = ((latestModal - prevModal) / prevModal) * 100.0;
+    return pct.isFinite ? pct : null;
+  }
+
+  // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -130,7 +328,6 @@ class _DashboardPageState extends State<DashboardPage> {
       email = args['email'] as String?;
     }
 
-    // Fallback: email local-part → else "Farmer"
     final friendlyName = (displayName?.trim().isNotEmpty == true)
         ? displayName!.trim()
         : (email != null && email!.contains('@'))
@@ -148,7 +345,7 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
           PopupMenuButton<String>(
             tooltip: 'Menu',
-            onSelected: (value) {
+            onSelected: (value) async {
               switch (value) {
                 case 'profile':
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -157,6 +354,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   break;
                 case 'refresh':
                   _getCurrentLocationWeather();
+                  await _loadMarketTickers();
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Refreshing...')),
                   );
@@ -190,7 +388,7 @@ class _DashboardPageState extends State<DashboardPage> {
               _WelcomeCard(friendlyName: friendlyName),
               const SizedBox(height: 20),
 
-              // Quick Stats Row
+              // Quick Stats Row (same as before)
               const _QuickStatsRow(),
               const SizedBox(height: 20),
 
@@ -264,7 +462,7 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
               const SizedBox(height: 20),
 
-              // Market Updates
+              // Market Updates (NOW LIVE DATA)
               Text(
                 'Market Updates',
                 style: theme.textTheme.titleLarge?.copyWith(
@@ -272,10 +470,136 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
               const SizedBox(height: 12),
-              const _MarketUpdates(),
+              _MarketUpdates(
+                isLoading: _isLoadingTickers,
+                error: _tickerError,
+                tickers: _tickers,
+                onRefresh: _loadMarketTickers,
+              ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/* --------------------------- Market Models & UI --------------------------- */
+
+class _MarketTicker {
+  final String commodity;
+  final int priceINR;
+  final double? changePct; // positive/negative if previous found
+  final String market;
+  final String state;
+  final String date; // dd/MM/yyyy
+
+  _MarketTicker({
+    required this.commodity,
+    required this.priceINR,
+    required this.changePct,
+    required this.market,
+    required this.state,
+    required this.date,
+  });
+}
+
+class _MarketUpdates extends StatelessWidget {
+  final bool isLoading;
+  final String error;
+  final List<_MarketTicker> tickers;
+  final VoidCallback onRefresh;
+
+  const _MarketUpdates({
+    required this.isLoading,
+    required this.error,
+    required this.tickers,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const SizedBox(
+        height: 120,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (error.isNotEmpty) {
+      return Row(
+        children: [
+          Expanded(child: Text(error, style: const TextStyle(color: Colors.red))),
+          IconButton(onPressed: onRefresh, icon: const Icon(Icons.refresh)),
+        ],
+      );
+    }
+    if (tickers.isEmpty) {
+      return Row(
+        children: [
+          const Expanded(child: Text('No market data')),
+          IconButton(onPressed: onRefresh, icon: const Icon(Icons.refresh)),
+        ],
+      );
+    }
+
+    return SizedBox(
+      height: 120,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: tickers.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (ctx, i) => _MarketTile(t: tickers[i]),
+      ),
+    );
+  }
+}
+
+class _MarketTile extends StatelessWidget {
+  final _MarketTicker t;
+  const _MarketTile({required this.t});
+
+  @override
+  Widget build(BuildContext context) {
+    final isUp = (t.changePct ?? 0) >= 0;
+    final changeText = (t.changePct == null)
+        ? '—'
+        : '${isUp ? '+' : ''}${t.changePct!.toStringAsFixed(1)}%';
+    final changeColor = (t.changePct == null)
+        ? Colors.grey
+        : (isUp ? Colors.green : Colors.red);
+
+    return Container(
+      width: 160,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(t.commodity, style: const TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text('₹${t.priceINR}',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          Text(
+            changeText,
+            style: TextStyle(color: changeColor, fontWeight: FontWeight.w600),
+          ),
+          const Spacer(),
+          Text(
+            '${t.market.isEmpty ? t.state : t.market}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          Text(
+            t.date, // dd/MM/yyyy from API
+            style: const TextStyle(fontSize: 11, color: Colors.grey),
+          ),
+        ],
       ),
     );
   }
@@ -352,8 +676,8 @@ class _DashboardDrawer extends StatelessWidget {
                     Icon(Icons.agriculture, size: 50, color: Colors.green),
                     SizedBox(height: 8),
                     Text('AgriMitra',
-                        style: TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.bold)),
+                        style:
+                        TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                     Text('Farmer\'s Companion'),
                   ],
                 ),
@@ -524,7 +848,7 @@ class _StatItem extends StatelessWidget {
   }
 }
 
-// Weather & Advisory Card (uses fetched data)
+// Weather & Advisory Card (uses fetched data, unchanged)
 class _WeatherAdvisoryCard extends StatelessWidget {
   final Map<String, dynamic>? weatherData;
   final bool isLoading;
@@ -657,7 +981,8 @@ class _WeatherAdvisoryCard extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Humidity: ${(weatherData!['main']['humidity'] as num).round()}%'),
+                        Text(
+                            'Humidity: ${(weatherData!['main']['humidity'] as num).round()}%'),
                         Text('Wind: ${(weatherData!['wind']['speed'] as num)} m/s'),
                       ],
                     ),
@@ -681,71 +1006,6 @@ class _WeatherAdvisoryCard extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _MarketUpdates extends StatelessWidget {
-  const _MarketUpdates();
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 120,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        children: const [
-          _MarketItem(crop: 'Wheat', price: '₹4,250', change: '+2.5%'),
-          _MarketItem(crop: 'Rice', price: '₹3,800', change: '+1.2%'),
-          _MarketItem(crop: 'Cotton', price: '₹6,700', change: '-0.8%'),
-          _MarketItem(crop: 'Soybean', price: '₹4,900', change: '+3.1%'),
-        ],
-      ),
-    );
-  }
-}
-
-class _MarketItem extends StatelessWidget {
-  final String crop;
-  final String price;
-  final String change;
-
-  const _MarketItem({
-    required this.crop,
-    required this.price,
-    required this.change,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isPositive = change.startsWith('+');
-
-    return Container(
-      width: 140,
-      margin: const EdgeInsets.only(right: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[200]!),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(crop, style: const TextStyle(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          Text(price,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text(
-            change,
-            style: TextStyle(
-              color: isPositive ? Colors.green : Colors.red,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
       ),
     );
   }
