@@ -97,7 +97,7 @@ class DashboardPage extends StatelessWidget {
                     subtitle: 'Mandi & forecast',
                     icon: Icons.price_change_outlined,
                     color: Colors.green,
-                    onTap: () => _todo(context, 'Crop Prices'),
+                    onTap: () => Navigator.pushNamed(context, '/crop-prices'),
                   ),
                   FeatureItem(
                     title: 'Rent Equipment',
@@ -194,8 +194,13 @@ class _UserChip extends StatelessWidget {
           CircleAvatar(
             radius: 12,
             backgroundColor: Theme.of(context).colorScheme.primary,
-            child: Text(initials,
-                style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onPrimary)),
+            child: Text(
+              initials,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onPrimary,
+              ),
+            ),
           ),
           const SizedBox(width: 8),
           Text(
@@ -230,7 +235,9 @@ class _DashboardDrawer extends StatelessWidget {
                   children: [
                     Icon(Icons.agriculture, size: 50, color: Colors.green),
                     SizedBox(height: 8),
-                    Text('AgriMitra', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    Text('AgriMitra',
+                        style:
+                        TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                     Text('Farmer\'s Companion'),
                   ],
                 ),
@@ -244,7 +251,7 @@ class _DashboardDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.price_change_outlined),
               title: const Text('Crop Prices'),
-              onTap: () => DashboardPage._todo(context, 'Crop Prices'),
+              onTap: () => Navigator.pushNamed(context, '/crop-prices'),
             ),
             ListTile(
               leading: const Icon(Icons.agriculture_outlined),
@@ -254,7 +261,8 @@ class _DashboardDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.local_florist_outlined),
               title: const Text('Crop Health'),
-              onTap: () => DashboardPage._todo(context, 'Crop Disease Detection'),
+              onTap: () =>
+                  DashboardPage._todo(context, 'Crop Disease Detection'),
             ),
             ListTile(
               leading: const Icon(Icons.assignment_turned_in_outlined),
@@ -276,7 +284,11 @@ class _DashboardDrawer extends StatelessWidget {
               leading: const Icon(Icons.logout),
               title: const Text('Logout'),
               onTap: () {
-                Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false);
+                Navigator.pushNamedAndRemoveUntil(
+                  context,
+                  '/login',
+                      (_) => false,
+                );
               },
             ),
           ],
@@ -339,9 +351,21 @@ class _QuickStatsRow extends StatelessWidget {
     return const Row(
       mainAxisAlignment: MainAxisAlignment.spaceAround,
       children: [
-        _StatItem(value: '₹4,250', label: 'Wheat/Q', icon: Icons.trending_up, color: Colors.green),
-        _StatItem(value: '28°C', label: 'Temperature', icon: Icons.thermostat, color: Colors.orange),
-        _StatItem(value: '65%', label: 'Soil Moisture', icon: Icons.water_drop, color: Colors.blue),
+        _StatItem(
+            value: '₹4,250',
+            label: 'Wheat/Q',
+            icon: Icons.trending_up,
+            color: Colors.green),
+        _StatItem(
+            value: '28°C',
+            label: 'Temperature',
+            icon: Icons.thermostat,
+            color: Colors.orange),
+        _StatItem(
+            value: '65%',
+            label: 'Soil Moisture',
+            icon: Icons.water_drop,
+            color: Colors.blue),
       ],
     );
   }
@@ -374,7 +398,9 @@ class _StatItem extends StatelessWidget {
         children: [
           Icon(icon, color: color),
           const SizedBox(height: 8),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          Text(value,
+              style:
+              const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 4),
           Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
         ],
@@ -412,7 +438,8 @@ class _WeatherAdvisoryCard extends StatelessWidget {
             const Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Today: Sunny', style: TextStyle(fontWeight: FontWeight.w500)),
+                Text('Today: Sunny',
+                    style: TextStyle(fontWeight: FontWeight.w500)),
                 Text('28°C / 18°C', style: TextStyle(color: Colors.grey)),
               ],
             ),
@@ -498,13 +525,17 @@ class _MarketItem extends StatelessWidget {
         children: [
           Text(crop, style: const TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 8),
-          Text(price, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          Text(price,
+              style:
+              const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          Text(change,
-              style: TextStyle(
-                  color: isPositive ? Colors.green : Colors.red,
-                  fontWeight: FontWeight.w500
-              )),
+          Text(
+            change,
+            style: TextStyle(
+              color: isPositive ? Colors.green : Colors.red,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
         ],
       ),
     );
@@ -543,13 +574,15 @@ class _FeatureGrid extends StatelessWidget {
       mainAxisSpacing: 12,
       crossAxisSpacing: 12,
       children: items
-          .map((f) => _FeatureTile(
-        title: f.title,
-        subtitle: f.subtitle,
-        icon: f.icon,
-        color: f.color,
-        onTap: f.onTap,
-      ))
+          .map(
+            (f) => _FeatureTile(
+          title: f.title,
+          subtitle: f.subtitle,
+          icon: f.icon,
+          color: f.color,
+          onTap: f.onTap,
+        ),
+      )
           .toList(),
     );
   }
@@ -597,7 +630,8 @@ class _FeatureTile extends StatelessWidget {
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                style:
+                const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
