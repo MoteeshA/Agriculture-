@@ -7,7 +7,7 @@ class DashboardPage extends StatefulWidget {
   static const route = '/dashboard';
   const DashboardPage({super.key});
 
-  // <-- FIX: keep _todo as a static on DashboardPage
+  // <-- keep _todo as a static on DashboardPage
   static void _todo(BuildContext context, String name) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('$name — screen coming soon')),
@@ -26,15 +26,13 @@ class _DashboardPageState extends State<DashboardPage> {
   final String _owmApiKey = '8d6127e074f05533890c5b550b4c0e2b';
 
   // ---------------- Market ticker state ----------------
-  // Uses data.gov.in (same as your CropPricesPage resource)
+  // Uses data.gov.in (same resource as your CropPricesPage)
   static const String _govApiKey =
       '579b464db66ec23bdd0000010baed15d539144fa62035eb3cd19e551';
-
-  // Variety-wise daily market prices dataset (you used this on CropPricesPage)
   static const String _resourceUrl =
       'https://api.data.gov.in/resource/35985678-0d79-46b4-9ed6-6f13308a1d24';
 
-  // Choose any 4 commodities you want on the dashboard (keep your originals)
+  // Show these on the dashboard ticker row
   final List<String> _dashboardCommodities = const [
     'Wheat',
     'Rice',
@@ -42,8 +40,8 @@ class _DashboardPageState extends State<DashboardPage> {
     'Soybean',
   ];
 
-  // If you want to pin to a region, set these (or leave null for all-India)
-  final String? _pinState = null; // e.g., 'Karnataka'
+  // Pin to a region (optional)
+  final String? _pinState = null;  // e.g., 'Karnataka'
   final String? _pinMarket = null; // e.g., 'Binny Mill (F&V), Bangalore'
 
   bool _isLoadingTickers = false;
@@ -140,7 +138,6 @@ class _DashboardPageState extends State<DashboardPage> {
     });
 
     try {
-      // Fetch latest (and previous) for each commodity in parallel
       final futures = _dashboardCommodities.map((c) =>
           _fetchLatestTicker(commodity: c, state: _pinState, market: _pinMarket));
       final results = await Future.wait(futures);
@@ -156,7 +153,6 @@ class _DashboardPageState extends State<DashboardPage> {
         return;
       }
 
-      // Keep exactly 4 tiles (pad with best-effort if fewer)
       nonNull.sort((a, b) => a.commodity.compareTo(b.commodity));
       setState(() {
         _tickers = nonNull.take(4).toList();
@@ -170,14 +166,11 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  // Pull top-most (latest) record for a commodity (+ optional region),
-  // also try to compute % change vs previous record date.
   Future<_MarketTicker?> _fetchLatestTicker({
     required String commodity,
     String? state,
     String? market,
   }) async {
-    // Build params for latest
     final latestParams = <String, String>{
       'api-key': _govApiKey,
       'format': 'json',
@@ -206,7 +199,6 @@ class _DashboardPageState extends State<DashboardPage> {
     if (latestRecords.isEmpty) return null;
 
     Map<String, dynamic>? pick;
-    // Prefer a row that has Modal_Price populated
     for (final r in latestRecords) {
       final m = (r as Map<String, dynamic>)['Modal_Price'];
       if (m != null && m.toString().trim().isNotEmpty) {
@@ -216,7 +208,6 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     pick ??= latestRecords.first as Map<String, dynamic>;
 
-    // Parse fields
     int _toInt(dynamic v) {
       if (v == null) return 0;
       if (v is int) return v;
@@ -244,8 +235,6 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // Find a previous-day (or older) record to compute % change.
-  // excludeDate is latest date string (dd/MM/yyyy); we skip that exact date.
   Future<double?> _computeChangePct({
     required String commodity,
     String? state,
@@ -281,7 +270,6 @@ class _DashboardPageState extends State<DashboardPage> {
       return int.tryParse(v.toString().trim()) ?? 0;
     }
 
-    // Pick first record that is from a different date than excludeDate
     Map<String, dynamic>? prev;
     for (final r in recs) {
       final m = (r as Map<String, dynamic>)['Modal_Price'];
@@ -293,7 +281,6 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     if (prev == null) return null;
 
-    // We need latest modal too; take first record with modal
     Map<String, dynamic>? latest;
     for (final r in recs) {
       final m = (r as Map<String, dynamic>)['Modal_Price'];
@@ -313,6 +300,35 @@ class _DashboardPageState extends State<DashboardPage> {
     return pct.isFinite ? pct : null;
   }
 
+  // ---------------- Helpers for Quick Stats ----------------
+  int? _currentTempC() {
+    try {
+      final t = _weatherData?['main']?['temp'];
+      if (t is num) return t.round();
+    } catch (_) {}
+    return null;
+  }
+
+  double? _currentWindKmh() {
+    try {
+      final s = _weatherData?['wind']?['speed']; // m/s from OWM
+      if (s is num) return (s * 3.6);
+    } catch (_) {}
+    return null;
+  }
+
+  int? _wheatPrice() {
+    try {
+      final w = _tickers.firstWhere(
+            (t) => t.commodity.toLowerCase() == 'wheat',
+        orElse: () => _tickers.first,
+      );
+      return w.priceINR;
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
@@ -328,11 +344,16 @@ class _DashboardPageState extends State<DashboardPage> {
       email = args['email'] as String?;
     }
 
+    // Fallback: email local-part → else "Farmer"
     final friendlyName = (displayName?.trim().isNotEmpty == true)
         ? displayName!.trim()
         : (email != null && email!.contains('@'))
         ? email!.split('@').first
         : 'Farmer';
+
+    final tempC = _currentTempC();
+    final windKmh = _currentWindKmh();
+    final wheat = _wheatPrice();
 
     return Scaffold(
       appBar: AppBar(
@@ -388,8 +409,12 @@ class _DashboardPageState extends State<DashboardPage> {
               _WelcomeCard(friendlyName: friendlyName),
               const SizedBox(height: 20),
 
-              // Quick Stats Row (same as before)
-              const _QuickStatsRow(),
+              // Quick Stats Row (now dynamic)
+              _QuickStatsRow(
+                wheatPrice: wheat,
+                temperatureC: tempC,
+                windKmh: windKmh,
+              ),
               const SizedBox(height: 20),
 
               // Main Features Grid
@@ -455,14 +480,13 @@ class _DashboardPageState extends State<DashboardPage> {
 
               // Weather & Advisory Section - uses real data
               _WeatherAdvisoryCard(
-                weatherData: _weatherData,
-                isLoading: _isLoadingWeather,
-                error: _weatherError,
-                onRefresh: _getCurrentLocationWeather,
-              ),
+                  weatherData: _weatherData,
+                  isLoading: _isLoadingWeather,
+                  error: _weatherError,
+                  onRefresh: _getCurrentLocationWeather),
               const SizedBox(height: 20),
 
-              // Market Updates (NOW LIVE DATA)
+              // Market Updates
               Text(
                 'Market Updates',
                 style: theme.textTheme.titleLarge?.copyWith(
@@ -570,36 +594,46 @@ class _MarketTile extends StatelessWidget {
 
     return Container(
       width: 160,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(10), // tighter padding to avoid tiny overflow
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey[200]!),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(t.commodity, style: const TextStyle(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 6),
-          Text('₹${t.priceINR}',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 6),
-          Text(
-            changeText,
-            style: TextStyle(color: changeColor, fontWeight: FontWeight.w600),
-          ),
-          const Spacer(),
-          Text(
-            '${t.market.isEmpty ? t.state : t.market}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12, color: Colors.grey),
-          ),
-          Text(
-            t.date, // dd/MM/yyyy from API
-            style: const TextStyle(fontSize: 11, color: Colors.grey),
-          ),
-        ],
+      child: DefaultTextStyle.merge(
+        // FIX: correct API — apply a tighter line height via style:
+        style: const TextStyle(height: 1.1),
+        child: Column(
+          mainAxisSize: MainAxisSize.min, // let content take just needed height
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(t.commodity, style: const TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            Text(
+              '₹${t.priceINR}',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              changeText,
+              style: TextStyle(color: changeColor, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            Flexible(
+              child: Text(
+                t.market.isEmpty ? t.state : t.market,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              t.date, // dd/MM/yyyy from API
+              style: const TextStyle(fontSize: 10, color: Colors.grey),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -783,29 +817,43 @@ class _WelcomeCard extends StatelessWidget {
   }
 }
 
+/* ---------------- Quick Stats (now dynamic) ---------------- */
+
 class _QuickStatsRow extends StatelessWidget {
-  const _QuickStatsRow();
+  final int? wheatPrice;     // INR per modal price (latest)
+  final int? temperatureC;   // from OWM
+  final double? windKmh;     // from OWM (converted)
+
+  const _QuickStatsRow({
+    this.wheatPrice,
+    this.temperatureC,
+    this.windKmh,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
+    return Row(
       mainAxisAlignment: MainAxisAlignment.spaceAround,
       children: [
         _StatItem(
-            value: '₹4,250',
-            label: 'Wheat/Q',
-            icon: Icons.trending_up,
-            color: Colors.green),
+          // FIX: int → string (avoid toStringAsFixed on int)
+          value: (wheatPrice != null) ? '₹$wheatPrice' : '—',
+          label: 'Wheat (Modal)',
+          icon: Icons.trending_up,
+          color: Colors.green,
+        ),
         _StatItem(
-            value: '28°C',
-            label: 'Temperature',
-            icon: Icons.thermostat,
-            color: Colors.orange),
+          value: (temperatureC != null) ? '$temperatureC°C' : '—',
+          label: 'Temperature',
+          icon: Icons.thermostat,
+          color: Colors.orange,
+        ),
         _StatItem(
-            value: '65%',
-            label: 'Soil Moisture',
-            icon: Icons.water_drop,
-            color: Colors.blue),
+          value: (windKmh != null) ? '${windKmh!.toStringAsFixed(0)} km/h' : '—',
+          label: 'Wind',
+          icon: Icons.air,
+          color: Colors.blue,
+        ),
       ],
     );
   }
@@ -827,7 +875,7 @@ class _StatItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 100,
+      width: 110, // a tad wider to avoid tight wraps
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.grey[50],
@@ -835,20 +883,31 @@ class _StatItem extends StatelessWidget {
         border: Border.all(color: Colors.grey[200]!),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, color: color),
           const SizedBox(height: 8),
-          Text(value,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          Text(
+            value,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
           const SizedBox(height: 4),
-          Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );
   }
 }
 
-// Weather & Advisory Card (uses fetched data, unchanged)
+/* ---------------- Weather & Advisory Card ---------------- */
+
 class _WeatherAdvisoryCard extends StatelessWidget {
   final Map<String, dynamic>? weatherData;
   final bool isLoading;
@@ -981,8 +1040,7 @@ class _WeatherAdvisoryCard extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                            'Humidity: ${(weatherData!['main']['humidity'] as num).round()}%'),
+                        Text('Humidity: ${(weatherData!['main']['humidity'] as num).round()}%'),
                         Text('Wind: ${(weatherData!['wind']['speed'] as num)} m/s'),
                       ],
                     ),
@@ -1039,7 +1097,8 @@ class _FeatureGrid extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       shrinkWrap: true,
       crossAxisCount: 3,
-      childAspectRatio: 0.9,
+      // a touch more vertical room helps avoid tiny overflows
+      childAspectRatio: 0.78,
       mainAxisSpacing: 12,
       crossAxisSpacing: 12,
       children: items
@@ -1085,6 +1144,7 @@ class _FeatureTile extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
           ),
           child: Column(
+            mainAxisSize: MainAxisSize.min, // keep content flexible
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
@@ -1095,25 +1155,29 @@ class _FeatureTile extends StatelessWidget {
                 ),
                 child: Icon(icon, size: 24, color: color),
               ),
-              const SizedBox(height: 12),
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style:
-                const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Theme.of(context).textTheme.bodySmall?.color,
+              const SizedBox(height: 10),
+              Flexible(
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              Flexible(
+                child: Text(
+                  subtitle,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).textTheme.bodySmall?.color,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: false,
+                ),
               ),
             ],
           ),
