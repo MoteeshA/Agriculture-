@@ -1,5 +1,3 @@
-// lib/screens/crop_prices.dart
-import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -13,716 +11,604 @@ class CropPricesPage extends StatefulWidget {
 }
 
 class _CropPricesPageState extends State<CropPricesPage> {
-  // ---- API ----
+  // ====== CONFIG ======
   static const String apiKey =
       '579b464db66ec23bdd0000010baed15d539144fa62035eb3cd19e551';
+  static const String baseUrl =
+      'https://api.data.gov.in/resource/35985678-0d79-46b4-9ed6-6f13308a1d24';
 
-  // Try these in order. We start with the active VARIETY-WISE resource; if it
-  // returns 0 or an error payload, we automatically fall back to the older one.
-  static const List<String> _baseUrls = [
-    // 1) Variety-wise Daily Market Prices Data of Commodity (ACTIVE)
-    'https://api.data.gov.in/resource/35985678-0d79-46b4-9ed6-6f13308a1d24',
-    // 2) Current Daily Price of Various Commodities (fallback; sometimes empty)
-    'https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070',
-  ];
-  int _baseIdx = 0;
+  // ====== UI STATE ======
+  final _commodityCtrl = TextEditingController(text: 'Tomato');
+  final _stateCtrl = TextEditingController();  // e.g., Karnataka
+  final _marketCtrl = TextEditingController(); // e.g., Binny Mill (F&V), Bangalore
+  DateTime? _selectedDate;
 
-  String get _baseUrl => _baseUrls[_baseIdx];
-
-  // ---- Data ----
-  final List<dynamic> _records = [];
-  bool _loading = true;
+  bool _loading = false;
   String _error = '';
-  int _offset = 0;
-  static const int _pageSize = 500;
-  bool _hasMoreServer = true;
+  List<PriceRecord> _records = [];
 
-  // ---- Filters ----
-  String selectedState = '';
-  String selectedDistrict = '';
-  String selectedMarket = '';
-  String selectedCommodity = '';
+  List<DailyPoint> _dailySeries = [];    // aggregated by date
+  List<DailyPoint> _forecastNext7 = [];  // 7-day forecast
 
-  DateTime? fromDate;
-  DateTime? toDate;
+  // ====== DATE HELPERS (no intl) ======
+  String _two(int x) => x < 10 ? '0$x' : '$x';
 
-  // If true, when date filter yields 0 results, show data ignoring date range.
-  bool autoIgnoreDateWhenEmpty = true;
-  bool _showingFallbackNoDate = false;
+  /// API wants dd/MM/yyyy
+  String _fmtApiDate(DateTime d) => '${_two(d.day)}/${_two(d.month)}/${d.year}';
 
-  // options
-  List<String> states = [];
-  List<String> districts = [];
-  List<String> markets = [];
-  List<String> commodities = [];
+  /// UI shows yyyy-MM-dd
+  String _fmtUiDate(DateTime d) => '${d.year}-${_two(d.month)}-${_two(d.day)}';
 
-  // search
-  final TextEditingController _searchCtrl = TextEditingController();
-  Timer? _debounce;
-
-  // sort
-  String sortField = 'Market';
-  bool sortAscending = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _resetAndFetch();
-    _searchCtrl.addListener(_onSearchChanged);
+  /// Parse dd/MM/yyyy
+  DateTime _parseApiDate(String s) {
+    try {
+      final p = s.split('/');
+      if (p.length == 3) {
+        final d = int.parse(p[0]);
+        final m = int.parse(p[1]);
+        final y = int.parse(p[2]);
+        return DateTime(y, m, d);
+      }
+    } catch (_) {}
+    return DateTime.now();
   }
 
   @override
   void dispose() {
-    _debounce?.cancel();
-    _searchCtrl.dispose();
+    _commodityCtrl.dispose();
+    _stateCtrl.dispose();
+    _marketCtrl.dispose();
     super.dispose();
   }
 
-  // ===== networking =====
-  Future<void> _resetAndFetch() async {
-    setState(() {
-      _records.clear();
-      _offset = 0;
-      _hasMoreServer = true;
-      _error = '';
-      _loading = true;
-      _showingFallbackNoDate = false;
-      _baseIdx = 0; // always start from the primary resource
-    });
-    await _fetch();
+  @override
+  void initState() {
+    super.initState();
+    _fetchAll(); // initial load
   }
 
-  Future<void> _fetch({bool append = true}) async {
-    if (!_hasMoreServer) {
-      setState(() => _loading = false);
-      return;
-    }
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate ?? now,
+      firstDate: DateTime(2006, 1, 1),
+      lastDate: now,
+    );
+    if (!mounted) return;
+    setState(() => _selectedDate = picked);
+  }
+
+  Future<void> _clearDate() async {
+    setState(() => _selectedDate = null);
+  }
+
+  Future<void> _fetchAll() async {
+    setState(() {
+      _loading = true;
+      _error = '';
+      _records = [];
+      _dailySeries = [];
+      _forecastNext7 = [];
+    });
 
     try {
-      final qp = <String, String>{
-        'api-key': apiKey,
-        'format': 'json',
-        'limit': '$_pageSize',
-        'offset': '$_offset',
-      };
+      // fetch a couple of pages to have enough data for trend
+      const int pageLimit = 200;
+      const int maxPages = 2;
 
-      // Only use equality filters the API reliably supports.
-      if (selectedState.isNotEmpty) qp['filters[state]'] = selectedState;
-      if (selectedDistrict.isNotEmpty) qp['filters[district]'] = selectedDistrict;
-      if (selectedMarket.isNotEmpty) qp['filters[market]'] = selectedMarket;
-      if (selectedCommodity.isNotEmpty) qp['filters[commodity]'] = selectedCommodity;
+      for (int i = 0; i < maxPages; i++) {
+        final page = await _fetchPage(limit: pageLimit, offset: i * pageLimit);
+        if (page.isEmpty) break;
+        _records.addAll(page);
+        if (page.length < pageLimit) break;
+      }
 
-      // ⚠️ DO NOT send date filters server-side (often returns 0).
-      // Client-side date filter is applied below in _filteredSorted.
+      // newest first
+      _records.sort((a, b) => b.arrivalDate.compareTo(a.arrivalDate));
 
-      final uri = Uri.parse(_baseUrl).replace(queryParameters: qp);
-      final res = await http.get(uri);
-
-      if (!mounted) return;
-
-      if (res.statusCode != 200) {
-        // Try the next dataset if available
-        final canFallback = _trySwitchDatasetOnFailure(
-          reason: 'HTTP ${res.statusCode}',
-          firstPage: _offset == 0 && _records.isEmpty,
-        );
-        if (canFallback) return;
+      if (_records.isEmpty) {
         setState(() {
-          _error = 'Failed: HTTP ${res.statusCode}';
-          _loading = false;
+          _error =
+          'No records returned. Try another commodity/state/market or clear the date filter.';
         });
-        return;
-      }
-
-      final body = json.decode(res.body) as Map<String, dynamic>;
-      final List<dynamic> recs = (body['records'] as List?) ?? [];
-
-      // When API returns a misleading payload with message, catch it early
-      final msg = (body['message'] ?? '').toString().toLowerCase();
-      if ((recs.isEmpty) &&
-          (msg.contains('resource id doesn\'t exist') ||
-              msg.contains('not exist') ||
-              msg.contains('error'))) {
-        final canFallback = _trySwitchDatasetOnFailure(
-          reason: 'Gateway message: ${body['message']}',
-          firstPage: _offset == 0 && _records.isEmpty,
-        );
-        if (canFallback) return;
-      }
-
-      if (append) {
-        _records.addAll(recs);
       } else {
-        _records
-          ..clear()
-          ..addAll(recs);
+        _dailySeries = _aggregateDaily(_records);
+        _forecastNext7 = _buildForecast(_dailySeries, nextDays: 7, lookback: 10);
       }
-
-      // If first page is empty, try fallback dataset automatically
-      if (recs.isEmpty && _offset == 0 && _records.isEmpty) {
-        final canFallback = _trySwitchDatasetOnFailure(
-          reason: '0 rows from current dataset',
-          firstPage: true,
-        );
-        if (canFallback) return;
-      }
-
-      _hasMoreServer = recs.length >= _pageSize;
-      if (_hasMoreServer) _offset += _pageSize;
-
-      // rebuild options from whatever we have so far
-      states = _uniqueOf(_records, 'state');
-      districts = _uniqueOf(
-        _records.where((r) => (r['state'] ?? '') == selectedState).toList(),
-        'district',
-      );
-      markets = _uniqueOf(
-        _records.where((r) =>
-        (r['state'] ?? '') == selectedState &&
-            (r['district'] ?? '') == selectedDistrict)
-            .toList(),
-        'market',
-      );
-      commodities = _uniqueOf(_records, 'commodity');
-
-      setState(() => _loading = false);
     } catch (e) {
-      // Network/parse errors: attempt fallback at first page
-      final canFallback = _trySwitchDatasetOnFailure(
-        reason: 'Exception: $e',
-        firstPage: _offset == 0 && _records.isEmpty,
-      );
-      if (canFallback) return;
-
-      setState(() {
-        _error = 'Error: $e';
-        _loading = false;
-      });
+      setState(() => _error = 'Error: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  bool _trySwitchDatasetOnFailure({required String reason, required bool firstPage}) {
-    if (!firstPage) return false;
-    if (_baseIdx + 1 < _baseUrls.length) {
-      _baseIdx += 1;
-      _offset = 0;
-      _hasMoreServer = true;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Primary dataset unavailable ($reason). Switching to fallback source…',
-          ),
-        ),
-      );
-      // fire-and-forget next fetch
-      _fetch();
-      return true;
-    }
-    return false;
-  }
+  /// One page from Data.gov.in with filters & sorting
+  Future<List<PriceRecord>> _fetchPage({int limit = 200, int offset = 0}) async {
+    final params = <String, String>{
+      'api-key': apiKey,
+      'format': 'json',
+      'limit': '$limit',
+      'offset': '$offset',
+      'sort[Arrival_Date]': 'desc',
+    };
 
-  // ===== helpers =====
-  List<String> _uniqueOf(List<dynamic> list, String field) {
-    final s = <String>{};
-    for (final r in list) {
-      final v = r[field]?.toString().trim();
-      if (v != null && v.isNotEmpty) s.add(v);
+    final commodity = _commodityCtrl.text.trim();
+    final state = _stateCtrl.text.trim();
+    final market = _marketCtrl.text.trim();
+
+    if (commodity.isNotEmpty) params['filters[Commodity]'] = commodity;
+    if (state.isNotEmpty) params['filters[State]'] = state;
+    if (market.isNotEmpty) params['filters[Market]'] = market;
+    if (_selectedDate != null) params['filters[Arrival_Date]'] = _fmtApiDate(_selectedDate!);
+
+    final uri = Uri.parse(baseUrl).replace(queryParameters: params);
+    final res = await http.get(uri).timeout(const Duration(seconds: 30));
+
+    if (res.statusCode != 200) {
+      throw Exception('HTTP ${res.statusCode}: ${res.body}');
     }
-    final out = s.toList()..sort();
+
+    final body = json.decode(res.body) as Map<String, dynamic>;
+    final count = (body['count'] ?? 0) as int;
+    final msg = (body['message'] ?? '').toString();
+
+    // Sometimes 200 + misleading "Resource id doesn't exist."
+    if (count == 0 && msg.toLowerCase().contains('resource id')) {
+      return <PriceRecord>[];
+    }
+
+    final recs = (body['records'] ?? []) as List;
+    final out = <PriceRecord>[];
+    for (final r in recs) {
+      try {
+        out.add(PriceRecord.fromJson(r as Map<String, dynamic>, parseDate: _parseApiDate));
+      } catch (_) {}
+    }
     return out;
   }
 
-  String _fmtDate(DateTime d) {
-    final dd = d.day.toString().padLeft(2, '0');
-    final mm = d.month.toString().padLeft(2, '0');
-    final yy = d.year.toString();
-    return '$dd/$mm/$yy';
-  }
-
-  bool _isSameDate(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
-  DateTime _parseDate(String ddmmyyyy) {
-    final p = ddmmyyyy.split('/');
-    if (p.length != 3) return DateTime.fromMillisecondsSinceEpoch(0);
-    return DateTime(int.parse(p[2]), int.parse(p[1]), int.parse(p[0]));
-  }
-
-  bool _withinDateRange(dynamic r) {
-    if (fromDate == null && toDate == null) return true;
-    final s = (r['arrival_date'] ?? '').toString();
-    if (s.isEmpty) return false;
-    final d = _parseDate(s);
-
-    if (fromDate != null && toDate == null) {
-      final start = DateTime(fromDate!.year, fromDate!.month, fromDate!.day);
-      return !d.isBefore(start);
+  /// Aggregate by date → average modal price
+  List<DailyPoint> _aggregateDaily(List<PriceRecord> records) {
+    final map = <DateTime, List<double>>{};
+    for (final r in records) {
+      final d = DateTime(r.arrivalDate.year, r.arrivalDate.month, r.arrivalDate.day);
+      map.putIfAbsent(d, () => []).add(r.modalPrice.toDouble());
     }
-    if (fromDate == null && toDate != null) {
-      final end = DateTime(toDate!.year, toDate!.month, toDate!.day, 23, 59, 59);
-      return !d.isAfter(end);
-    }
-    final start = DateTime(fromDate!.year, fromDate!.month, fromDate!.day);
-    final end = DateTime(toDate!.year, toDate!.month, toDate!.day, 23, 59, 59);
-    return (d.isAfter(start) || _isSameDate(d, start)) &&
-        (d.isBefore(end) || _isSameDate(d, end));
+    final days = map.keys.toList()..sort();
+    return [for (final d in days) DailyPoint(date: d, value: _avg(map[d]!))];
   }
 
-  void _onSearchChanged() {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 250), () {
-      if (mounted) setState(() {});
-    });
+  double _avg(List<double> xs) =>
+      xs.isEmpty ? 0 : xs.reduce((a, b) => a + b) / xs.length;
+
+  /// Simple linear regression on last [lookback] daily points → next [nextDays]
+  List<DailyPoint> _buildForecast(
+      List<DailyPoint> series, {
+        int nextDays = 7,
+        int lookback = 10,
+      }) {
+    if (series.length < 3) return [];
+    final tail = series.length > lookback
+        ? series.sublist(series.length - lookback)
+        : List<DailyPoint>.from(series);
+
+    final n = tail.length;
+    final xs = List<double>.generate(n, (i) => i.toDouble());
+    final ys = tail.map((e) => e.value).toList();
+
+    double sum(List<double> a) => a.fold(0.0, (p, c) => p + c);
+
+    final sumX = sum(xs);
+    final sumY = sum(ys);
+    final sumXX = sum(xs.map((x) => x * x).toList());
+    final sumXY = sum([for (int i = 0; i < n; i++) xs[i] * ys[i]]);
+
+    final denom = (n * sumXX - sumX * sumX);
+    if (denom == 0) return [];
+
+    final a = (sumY * sumXX - sumX * sumXY) / denom; // intercept
+    final b = (n * sumXY - sumX * sumY) / denom;     // slope
+
+    final lastDate = series.last.date;
+    final future = <DailyPoint>[];
+    for (int i = 1; i <= nextDays; i++) {
+      final t = xs.last + i;
+      double y = a + b * t;
+      if (y < 0) y = 0;
+      future.add(DailyPoint(date: lastDate.add(Duration(days: i)), value: y));
+    }
+    return future;
   }
 
-  num _toNum(dynamic v) => num.tryParse((v ?? '').toString()) ?? 0;
-
-  // ===== derived (filter + sort + smart fallback) =====
-  List<dynamic> get _filteredSorted {
-    _showingFallbackNoDate = false;
-
-    List<dynamic> base = _records;
-
-    // typed text filter
-    final q = _searchCtrl.text.trim().toLowerCase();
-    if (q.isNotEmpty) {
-      base = base.where((r) {
-        final hay = [
-          r['commodity'],
-          r['market'],
-          r['district'],
-          r['state'],
-          r['variety'],
-          r['grade'],
-        ].map((e) => (e ?? '').toString().toLowerCase()).join(' ');
-        return hay.contains(q);
-      }).toList();
-    }
-
-    // dropdown filters
-    base = base.where((r) {
-      final sOk = selectedState.isEmpty || (r['state'] ?? '') == selectedState;
-      final dOk =
-          selectedDistrict.isEmpty || (r['district'] ?? '') == selectedDistrict;
-      final mOk = selectedMarket.isEmpty || (r['market'] ?? '') == selectedMarket;
-      final cOk = selectedCommodity.isEmpty ||
-          (r['commodity'] ?? '') == selectedCommodity;
-      return sOk && dOk && mOk && cOk;
-    }).toList();
-
-    // date range filter (client-side)
-    List<dynamic> withDate = base.where(_withinDateRange).toList();
-
-    // smart fallback: if no rows and a date range is set, ignore date
-    if (withDate.isEmpty && (fromDate != null || toDate != null) && autoIgnoreDateWhenEmpty) {
-      withDate = base;
-      _showingFallbackNoDate = true;
-    }
-
-    // sort
-    withDate.sort((a, b) {
-      int res = 0;
-      switch (sortField) {
-        case 'Market':
-          res = (a['market'] ?? '').toString().compareTo((b['market'] ?? '').toString());
-          break;
-        case 'Commodity':
-          res = (a['commodity'] ?? '').toString().compareTo((b['commodity'] ?? '').toString());
-          break;
-        case 'District':
-          res = (a['district'] ?? '').toString().compareTo((b['district'] ?? '').toString());
-          break;
-        case 'State':
-          res = (a['state'] ?? '').toString().compareTo((b['state'] ?? '').toString());
-          break;
-        case 'Arrival Date':
-          res = _parseDate((a['arrival_date'] ?? '').toString())
-              .compareTo(_parseDate((b['arrival_date'] ?? '').toString()));
-          break;
-        case 'Min Price':
-          res = _toNum(a['min_price']).compareTo(_toNum(b['min_price']));
-          break;
-        case 'Max Price':
-          res = _toNum(a['max_price']).compareTo(_toNum(b['max_price']));
-          break;
-        case 'Modal Price':
-          res = _toNum(a['modal_price']).compareTo(_toNum(b['modal_price']));
-          break;
-      }
-      return sortAscending ? res : -res;
-    });
-
-    return withDate;
-  }
-
-  // ===== UI =====
+  // ====== UI ======
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Variety-wise Daily Market Prices'),
-        actions: [
-          IconButton(onPressed: _resetAndFetch, icon: const Icon(Icons.refresh))
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _resetAndFetch,
+      appBar: AppBar(title: const Text('Crop Prices')),
+      body: SafeArea(
         child: Column(
           children: [
-            _filtersCard(scheme),
-            _sortRow(scheme),
-            if (_showingFallbackNoDate)
+            _FilterBar(
+              commodityCtrl: _commodityCtrl,
+              stateCtrl: _stateCtrl,
+              marketCtrl: _marketCtrl,
+              selectedDate: _selectedDate,
+              onPickDate: _pickDate,
+              onClearDate: _clearDate,
+              onSearch: _fetchAll,
+              loading: _loading,
+              fmtUiDate: _fmtUiDate,
+            ),
+            if (_error.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  children: [
-                    const Icon(Icons.info_outline, size: 18),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        'No rows for the selected date range. Showing latest available data for your filters.',
-                        style: TextStyle(color: scheme.onSurfaceVariant),
-                      ),
-                    ),
-                  ],
-                ),
+                padding: const EdgeInsets.all(12),
+                child: Text(_error, style: TextStyle(color: theme.colorScheme.error)),
               ),
             Expanded(
-              child: _loading && _records.isEmpty
+              child: _loading
                   ? const Center(child: CircularProgressIndicator())
-                  : _error.isNotEmpty
-                  ? _errorBox()
-                  : _filteredSorted.isEmpty
-                  ? const Center(child: Text('No data found'))
-                  : ListView.builder(
-                physics: const AlwaysScrollableScrollPhysics(),
-                itemCount:
-                _filteredSorted.length + (_hasMoreServer ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (_hasMoreServer &&
-                      index == _filteredSorted.length) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      child: Center(
-                        child: _loading
-                            ? const CircularProgressIndicator()
-                            : OutlinedButton.icon(
-                          onPressed: () => _fetch(),
-                          icon: const Icon(Icons.expand_more),
-                          label: const Text('Load more'),
-                        ),
-                      ),
-                    );
-                  }
-                  final r = _filteredSorted[index];
-                  return _PriceCard(record: r);
-                },
+                  : _records.isEmpty
+                  ? const Center(child: Text('No data'))
+                  : _ResultsAndForecast(
+                records: _records,
+                daily: _dailySeries,
+                forecast: _forecastNext7,
+                fmtUiDate: _fmtUiDate,
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _errorBox() => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(_error, textAlign: TextAlign.center),
-          const SizedBox(height: 8),
-          FilledButton(onPressed: _resetAndFetch, child: const Text('Retry')),
-        ],
-      ),
-    ),
-  );
-
-  Widget _filtersCard(ColorScheme scheme) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-      child: Column(
-        children: [
-          // search
-          TextField(
-            controller: _searchCtrl,
-            decoration: InputDecoration(
-              hintText: 'Search commodity / market / district / state',
-              prefixIcon: const Icon(Icons.search),
-              suffixIcon: _searchCtrl.text.isEmpty
-                  ? null
-                  : IconButton(
-                icon: const Icon(Icons.clear),
-                onPressed: () {
-                  _searchCtrl.clear();
-                  setState(() {});
-                },
-              ),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          // cascading dropdowns
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _dd(
-                  hint: 'State',
-                  value: selectedState.isEmpty ? null : selectedState,
-                  items: [''] + states,
-                  onChanged: (v) {
-                    selectedState = (v ?? '');
-                    selectedDistrict = '';
-                    selectedMarket = '';
-                    _resetAndFetch();
-                  },
-                ),
-                const SizedBox(width: 8),
-                _dd(
-                  hint: 'District',
-                  value: selectedDistrict.isEmpty ? null : selectedDistrict,
-                  items: [''] + districts,
-                  onChanged: (v) {
-                    selectedDistrict = (v ?? '');
-                    selectedMarket = '';
-                    _resetAndFetch();
-                  },
-                ),
-                const SizedBox(width: 8),
-                _dd(
-                  hint: 'Market',
-                  value: selectedMarket.isEmpty ? null : selectedMarket,
-                  items: [''] + markets,
-                  onChanged: (v) {
-                    selectedMarket = (v ?? '');
-                    _resetAndFetch();
-                  },
-                ),
-                const SizedBox(width: 8),
-                _dd(
-                  hint: 'Commodity',
-                  value: selectedCommodity.isEmpty ? null : selectedCommodity,
-                  items: [''] + commodities,
-                  onChanged: (v) {
-                    selectedCommodity = (v ?? '');
-                    _resetAndFetch();
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // date range + clear + count
-          Row(
-            children: [
-              FilledButton.icon(
-                onPressed: _pickFromDate,
-                icon: const Icon(Icons.calendar_today, size: 18),
-                label: Text(fromDate == null ? 'From' : _fmtDate(fromDate!)),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: _pickToDate,
-                icon: const Icon(Icons.calendar_month, size: 18),
-                label: Text(toDate == null ? 'To' : _fmtDate(toDate!)),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filledTonal(
-                tooltip: 'Clear dates',
-                onPressed: () {
-                  setState(() {
-                    fromDate = null;
-                    toDate = null;
-                    _showingFallbackNoDate = false;
-                  });
-                },
-                icon: const Icon(Icons.clear),
-              ),
-              const Spacer(),
-              Container(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: scheme.primaryContainer.withOpacity(.6),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Text(
-                  '${_filteredSorted.length} results',
-                  style: TextStyle(
-                      color: scheme.onPrimaryContainer,
-                      fontWeight: FontWeight.w600),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _sortRow(ColorScheme scheme) {
-    const fields = <String>[
-      'Market',
-      'Commodity',
-      'District',
-      'State',
-      'Arrival Date',
-      'Min Price',
-      'Max Price',
-      'Modal Price',
-    ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-      child: Row(
-        children: [
-          const Text('Sort By:'),
-          const SizedBox(width: 8),
-          DropdownButton<String>(
-            value: sortField,
-            items: fields
-                .map((f) => DropdownMenuItem(value: f, child: Text(f)))
-                .toList(),
-            onChanged: (v) => setState(() => sortField = v ?? 'Market'),
-          ),
-          const SizedBox(width: 8),
-          IconButton.filledTonal(
-            tooltip: sortAscending ? 'Ascending' : 'Descending',
-            onPressed: () => setState(() => sortAscending = !sortAscending),
-            icon: Icon(sortAscending
-                ? Icons.arrow_upward_rounded
-                : Icons.arrow_downward_rounded),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _pickFromDate() async {
-    final now = DateTime.now();
-    final res = await showDatePicker(
-      context: context,
-      initialDate: fromDate ?? now,
-      firstDate: DateTime(now.year - 15),
-      lastDate: now,
-    );
-    if (res != null) {
-      setState(() => fromDate = res);
-      await _resetAndFetch();
-    }
-  }
-
-  Future<void> _pickToDate() async {
-    final now = DateTime.now();
-    final res = await showDatePicker(
-      context: context,
-      initialDate: toDate ?? fromDate ?? now,
-      firstDate: DateTime(now.year - 15),
-      lastDate: now,
-    );
-    if (res != null) {
-      setState(() => toDate = res);
-      await _resetAndFetch();
-    }
-  }
-
-  Widget _dd({
-    required String hint,
-    required List<String> items,
-    required String? value,
-    required ValueChanged<String?> onChanged,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          isDense: true,
-          value: value,
-          hint: Text(hint),
-          items: items
-              .map((e) => DropdownMenuItem<String>(
-            value: e.isEmpty ? '' : e,
-            child: e.isEmpty ? Text('All $hint') : Text(e),
-          ))
-              .toList(),
-          onChanged: onChanged,
         ),
       ),
     );
   }
 }
 
-// ===== card =====
-class _PriceCard extends StatelessWidget {
-  final dynamic record;
-  const _PriceCard({required this.record});
+/* ============================== MODELS ============================== */
+
+class PriceRecord {
+  final String state;
+  final String district;
+  final String market;
+  final String commodity;
+  final String variety;
+  final String grade;
+  final DateTime arrivalDate;
+  final int minPrice;
+  final int maxPrice;
+  final int modalPrice;
+  final String? remarks;
+
+  PriceRecord({
+    required this.state,
+    required this.district,
+    required this.market,
+    required this.commodity,
+    required this.variety,
+    required this.grade,
+    required this.arrivalDate,
+    required this.minPrice,
+    required this.maxPrice,
+    required this.modalPrice,
+    this.remarks,
+  });
+
+  factory PriceRecord.fromJson(
+      Map<String, dynamic> j, {
+        required DateTime Function(String) parseDate,
+      }) {
+    final dateStr = (j['Arrival_Date'] ?? j['arrival_date'] ?? '').toString();
+
+    int _toInt(dynamic v) {
+      if (v == null) return 0;
+      if (v is int) return v;
+      final s = v.toString().trim();
+      return int.tryParse(s) ?? 0;
+    }
+
+    return PriceRecord(
+      state: (j['State'] ?? '').toString(),
+      district: (j['District'] ?? '').toString(),
+      market: (j['Market'] ?? '').toString(),
+      commodity: (j['Commodity'] ?? '').toString(),
+      variety: (j['Variety'] ?? '').toString(),
+      grade: (j['Grade'] ?? '').toString(),
+      arrivalDate: parseDate(dateStr),
+      minPrice: _toInt(j['Min_Price']),
+      maxPrice: _toInt(j['Max_Price']),
+      modalPrice: _toInt(j['Modal_Price']),
+      remarks: j['Remarks']?.toString(),
+    );
+  }
+}
+
+class DailyPoint {
+  final DateTime date;
+  final double value;
+  DailyPoint({required this.date, required this.value});
+}
+
+/* ============================ WIDGETS ============================ */
+
+class _FilterBar extends StatelessWidget {
+  final TextEditingController commodityCtrl;
+  final TextEditingController stateCtrl;
+  final TextEditingController marketCtrl;
+  final DateTime? selectedDate;
+  final VoidCallback onSearch;
+  final VoidCallback onClearDate;
+  final Future<void> Function() onPickDate;
+  final bool loading;
+  final String Function(DateTime) fmtUiDate;
+
+  const _FilterBar({
+    required this.commodityCtrl,
+    required this.stateCtrl,
+    required this.marketCtrl,
+    required this.selectedDate,
+    required this.onPickDate,
+    required this.onClearDate,
+    required this.onSearch,
+    required this.loading,
+    required this.fmtUiDate,
+  });
 
   @override
   Widget build(BuildContext context) {
-    String _s(String k, [String d = 'N/A']) =>
-        (record[k]?.toString().trim().isNotEmpty ?? false)
-            ? record[k].toString()
-            : d;
+    final theme = Theme.of(context);
+
+    String dateLabel =
+    selectedDate == null ? 'Any date' : 'Date: ${fmtUiDate(selectedDate!)}';
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      margin: const EdgeInsets.all(12),
       elevation: 1,
       child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.all(12),
+        child: Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          runSpacing: 8,
           children: [
-            Text(_s('commodity', 'Unknown Commodity'),
-                style:
-                const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
-            Text('${_s('market', 'Unknown')}, ${_s('district')} , ${_s('state')}',
-                style: const TextStyle(color: Colors.black54)),
-            const SizedBox(height: 10),
+            _SmallField(label: 'Commodity', controller: commodityCtrl, hint: 'e.g., Tomato'),
+            _SmallField(label: 'State', controller: stateCtrl, hint: 'e.g., Karnataka'),
+            _SmallField(
+              label: 'Market',
+              controller: marketCtrl,
+              hint: 'e.g., Binny Mill (F&V), Bangalore',
+              width: 260,
+            ),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                _chip('Min', _s('min_price')),
-                _chip('Max', _s('max_price')),
-                _chip('Avg', _s('modal_price')),
+                Text(dateLabel, style: theme.textTheme.bodyMedium),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: loading ? null : onPickDate,
+                  icon: const Icon(Icons.date_range),
+                  label: const Text('Pick'),
+                ),
+                const SizedBox(width: 6),
+                TextButton(
+                  onPressed: loading ? null : onClearDate,
+                  child: const Text('Clear'),
+                ),
               ],
             ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 12,
-              runSpacing: 6,
-              children: [
-                _kv('Variety', _s('variety')),
-                _kv('Grade', _s('grade')),
-                _kv('Date', _s('arrival_date')),
-                _kv('Code', _s('commodity_code', '-')),
-              ],
+            FilledButton.icon(
+              onPressed: loading ? null : onSearch,
+              icon: const Icon(Icons.search),
+              label: const Text('Search'),
             ),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _chip(String label, String v) =>
-      Chip(label: Text('$label: ₹$v'), visualDensity: VisualDensity.compact);
+class _SmallField extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final String? hint;
+  final double width;
 
-  Widget _kv(String k, String v) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Text('$k: ', style: const TextStyle(fontWeight: FontWeight.w600)),
-      Text(v),
-    ],
-  );
+  const _SmallField({
+    required this.label,
+    required this.controller,
+    this.hint,
+    this.width = 180,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: width,
+      child: TextField(
+        controller: controller,
+        decoration: InputDecoration(labelText: label, hintText: hint),
+      ),
+    );
+  }
+}
+
+class _ResultsAndForecast extends StatelessWidget {
+  final List<PriceRecord> records;
+  final List<DailyPoint> daily;
+  final List<DailyPoint> forecast;
+  final String Function(DateTime) fmtUiDate;
+
+  const _ResultsAndForecast({
+    required this.records,
+    required this.daily,
+    required this.forecast,
+    required this.fmtUiDate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Latest Market Data (${records.length} rows)',
+              style:
+              theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.grey[300]!),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                columns: const [
+                  DataColumn(label: Text('Date')),
+                  DataColumn(label: Text('State')),
+                  DataColumn(label: Text('District')),
+                  DataColumn(label: Text('Market')),
+                  DataColumn(label: Text('Commodity')),
+                  DataColumn(label: Text('Variety')),
+                  DataColumn(label: Text('Min')),
+                  DataColumn(label: Text('Max')),
+                  DataColumn(label: Text('Modal')),
+                ],
+                rows: [
+                  for (final r in records)
+                    DataRow(cells: [
+                      DataCell(Text(fmtUiDate(r.arrivalDate))),
+                      DataCell(Text(r.state)),
+                      DataCell(Text(r.district)),
+                      DataCell(Text(r.market)),
+                      DataCell(Text(r.commodity)),
+                      DataCell(Text(r.variety)),
+                      DataCell(Text('₹${r.minPrice}')),
+                      DataCell(Text('₹${r.maxPrice}')),
+                      DataCell(Text(
+                        '₹${r.modalPrice}',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      )),
+                    ]),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Price Trend (Daily Avg. Modal) & 7-Day Forecast',
+              style:
+              theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (daily.isEmpty)
+            const Text(
+              'Not enough daily data to compute a trend. Try removing filters or fetching more rows.',
+            )
+          else
+            _ForecastBlock(daily: daily, forecast: forecast, fmtUiDate: fmtUiDate),
+        ],
+      ),
+    );
+  }
+}
+
+class _ForecastBlock extends StatelessWidget {
+  final List<DailyPoint> daily;
+  final List<DailyPoint> forecast;
+  final String Function(DateTime) fmtUiDate;
+
+  const _ForecastBlock({
+    required this.daily,
+    required this.forecast,
+    required this.fmtUiDate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final histTail = daily.length > 10 ? daily.sublist(daily.length - 10) : daily;
+
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: _MiniList(
+                    title: 'Recent Daily Avg (Modal)',
+                    items: [
+                      for (final p in histTail)
+                        '${fmtUiDate(p.date)}  —  ₹${p.value.toStringAsFixed(0)}',
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _MiniList(
+                    title: 'Forecast (Next 7 days)',
+                    items: forecast.isEmpty
+                        ? ['Insufficient data for forecast']
+                        : [
+                      for (final f in forecast)
+                        '${fmtUiDate(f.date)}  —  ₹${f.value.toStringAsFixed(0)}'
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Forecast uses a simple linear trend over the last ~10 daily points (no seasonality).',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniList extends StatelessWidget {
+  final String title;
+  final List<String> items;
+
+  const _MiniList({required this.title, required this.items});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title,
+            style:
+            theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        ...items.map(
+              (s) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Text(s),
+          ),
+        ),
+      ],
+    );
+  }
 }
