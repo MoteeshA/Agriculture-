@@ -57,10 +57,8 @@ The solution is available as both a **Flutter Mobile App** and a **React Web Pla
 
 ## 📽️ Demo & Access  
 
-- 🎥 [YouTube Demo 1](https://www.youtube.com/watch?v=XXXXX)  
-- 🎥 [YouTube Demo 2](https://www.youtube.com/watch?v=YYYYY)  
-- 📲 [Download APK](https://example.com/agrimitra.apk)  
-- 🌐 [Live Website](https://example.com/agrimitra)  
+- 🎥 [YouTube Demo - App](https://www.youtube.com/watch?v=AY2RGJN9cCw)  
+- 🎥 [YouTube Demo - Website](https://www.youtube.com/watch?v=uL0WDwZwii8)  
 
 ---
 
