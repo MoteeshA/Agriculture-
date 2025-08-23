@@ -73,8 +73,7 @@ cd AgriMitra                     # Navigate to Flutter app folder
 flutter pub get                  # Get dependencies
 flutter run                      # Run app on emulator / device
 
-### 🔹 Flutter
-```bash
+🔹 Flask Application
 For WebApplication
 ```bash
 cd agrimitra/backend             # Navigate to backend folder
