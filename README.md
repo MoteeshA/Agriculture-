@@ -1,6 +1,6 @@
-# 🌾 KrishiMitra – One-Stop Farmer Ecosystem  
+# 🌾 AgriMitra – One-Stop Farmer Ecosystem  
 
-KrishiMitra is a **One-Stop Digital Solution** designed to empower farmers by addressing challenges such as **unfair pricing, high equipment costs, counterfeit tools, lack of crop guidance, disease prevention, and scheme awareness**.  
+AgriMitra is a **One-Stop Digital Solution** designed to empower farmers by addressing challenges such as **unfair pricing, high equipment costs, counterfeit tools, lack of crop guidance, disease prevention, and scheme awareness**.  
 
 The solution is available as both a **Flutter Mobile App** and a **React Web Platform**, ensuring accessibility across devices.  
 
@@ -21,7 +21,7 @@ The solution is available as both a **Flutter Mobile App** and a **React Web Pla
 
 ## 🛠️ Problem–Solution Mapping  
 
-| **Problem Faced by Farmers** | **Our Solution – KrishiMitra** |
+| **Problem Faced by Farmers** | **Our Solution – AgriMitra** |
 |-------------------------------|--------------------------------|
 | Unfair Pricing | Real-time + historical mandi prices with analytics and India map view |
 | High Equipment Costs | Rental & lending marketplace for agricultural tools |
@@ -59,8 +59,8 @@ The solution is available as both a **Flutter Mobile App** and a **React Web Pla
 
 - 🎥 [YouTube Demo 1](https://www.youtube.com/watch?v=XXXXX)  
 - 🎥 [YouTube Demo 2](https://www.youtube.com/watch?v=YYYYY)  
-- 📲 [Download APK](https://example.com/krishimitra.apk)  
-- 🌐 [Live Website](https://example.com/krishimitra)  
+- 📲 [Download APK](https://example.com/agrimitra.apk)  
+- 🌐 [Live Website](https://example.com/agrimitra)  
 
 ---
 
@@ -69,18 +69,18 @@ The solution is available as both a **Flutter Mobile App** and a **React Web Pla
 ### 🔹 Backend (Flask / FastAPI)
 ```bash
 # Clone repo
-git clone https://github.com/your-repo/krishimitra.git
+git clone https://github.com/your-repo/agrimitra.git
 
-cd krishimitra/backend             # Navigate to backend folder
-python -m venv venv                # Create virtual environment (recommended)
-venv\Scripts\activate              # Activate venv (Windows)
-pip install -r requirements.txt    # Install dependencies
-python app.py                      # Run backend server
+cd agrimitra/backend             # Navigate to backend folder
+python -m venv venv              # Create virtual environment (recommended)
+venv\Scripts\activate            # Activate venv (Windows)
+pip install -r requirements.txt  # Install dependencies
+python app.py                    # Run backend server
 
-cd ../frontend                     # Navigate to frontend folder
-npm i                              # Install dependencies
-npm run dev                        # Start development server (Vite) / use npm start if CRA
+cd ../frontend                   # Navigate to frontend folder
+npm i                            # Install dependencies
+npm run dev                      # Start development server (Vite) / use npm start if CRA
 
-cd ../mobile                       # Navigate to Flutter app folder
-flutter pub get                    # Get dependencies
-flutter run                        # Run app on emulator / device
+cd ../mobile                     # Navigate to Flutter app folder
+flutter pub get                  # Get dependencies
+flutter run                      # Run app on emulator / device
