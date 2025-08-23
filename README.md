@@ -75,7 +75,6 @@ flutter run                      # Run app on emulator / device
 
 🔹 Flask Application
 For WebApplication
-```bash
 cd agrimitra/backend             # Navigate to backend folder
 python -m venv venv              # Create virtual environment (recommended)
 venv\Scripts\activate            # Activate venv (Windows)
