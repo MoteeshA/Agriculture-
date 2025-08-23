@@ -10,6 +10,9 @@ import 'package:flutter/services.dart'; // for input formatters
 import 'package:agrimitra/services/db_helper.dart';
 import 'package:sqflite/sqflite.dart';
 
+// ✅ NEW: open Disease Detect screen
+import 'package:agrimitra/screens/disease.dart';
+
 class DashboardPage extends StatefulWidget {
   static const route = '/dashboard';
   const DashboardPage({super.key});
@@ -472,8 +475,11 @@ class _DashboardPageState extends State<DashboardPage> {
                     subtitle: 'Upload leaf photo',
                     icon: Icons.health_and_safety_outlined,
                     color: Colors.orange,
-                    onTap: () =>
-                        DashboardPage._todo(context, 'Crop Disease Detection'),
+                    // ✅ NOW navigates to disease.dart
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const DiseasePage()),
+                    ),
                   ),
                   FeatureItem(
                     title: 'Growth Monitor',
@@ -776,8 +782,11 @@ class _DashboardDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.local_florist_outlined),
               title: const Text('Crop Health'),
-              onTap: () =>
-                  DashboardPage._todo(context, 'Crop Disease Detection'),
+              // ✅ NOW navigates to disease.dart
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DiseasePage()),
+              ),
             ),
             ListTile(
               leading: const Icon(Icons.assignment_turned_in_outlined),

@@ -4,9 +4,10 @@ import 'screens/welcome.dart';
 import 'screens/login_page.dart';
 import 'screens/signup_page.dart';
 import 'screens/dashboard.dart';
-import 'screens/crop_prices.dart'; // <-- existing
-import 'screens/rent.dart';        // <-- NEW: add this
-import 'screens/admin.dart';       // <-- NEW: admin review screen
+import 'screens/crop_prices.dart';
+import 'screens/rent.dart';
+import 'screens/admin.dart';
+import 'screens/disease.dart'; // <-- NEW: disease detection screen
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,8 +33,9 @@ class AgriMitraApp extends StatelessWidget {
         SignupPage.route:    (_)   => const SignupPage(),
         DashboardPage.route: (_)   => const DashboardPage(),
         CropPricesPage.route: (_)  => const CropPricesPage(),
-        RentPage.route:      (_)   => const RentPage(),    // <-- keep
-        '/admin':            (_)   => const AdminPage(),   // <-- NEW: superadmin landing
+        RentPage.route:      (_)   => const RentPage(),
+        DiseasePage.route:   (_)   => const DiseasePage(), // ✅ fixed
+        '/admin':            (_)   => const AdminPage(),
       },
     );
   }

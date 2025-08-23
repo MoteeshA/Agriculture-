@@ -401,32 +401,40 @@ class _GiveOnRentTabState extends State<_GiveOnRentTab> {
                       phone: (e['phone'] ?? '').toString(),
                       imageUrl: (e['image_url'] ?? '').toString(),
                       certStatus: certStatus, // ★
-                      trailing: Row(
+                      // FIX: vertical actions – delete button below the Available/pause row
+                      trailing: Column(
                         mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: available ? Colors.green[50] : Colors.grey[200],
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Text(
-                              available ? 'Available' : 'Paused',
-                              style: TextStyle(
-                                color: available ? Colors.green : Colors.grey[700],
-                                fontWeight: FontWeight.w600,
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: available ? Colors.green[50] : Colors.grey[200],
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: Text(
+                                  available ? 'Available' : 'Paused',
+                                  style: TextStyle(
+                                    color: available ? Colors.green : Colors.grey[700],
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                               ),
-                            ),
+                              IconButton(
+                                tooltip: available ? 'Pause' : 'Make available',
+                                icon: Icon(available ? Icons.pause_circle : Icons.play_circle),
+                                onPressed: () async {
+                                  await DBHelper.instance
+                                      .toggleEquipmentAvailability(e['id'] as int, !available);
+                                  setState(() {});
+                                },
+                              ),
+                            ],
                           ),
-                          IconButton(
-                            tooltip: available ? 'Pause' : 'Make available',
-                            icon: Icon(available ? Icons.pause_circle : Icons.play_circle),
-                            onPressed: () async {
-                              await DBHelper.instance
-                                  .toggleEquipmentAvailability(e['id'] as int, !available);
-                              setState(() {});
-                            },
-                          ),
+                          const SizedBox(height: 4),
                           IconButton(
                             tooltip: 'Remove listing',
                             icon: const Icon(Icons.delete_outline, color: Colors.red),
@@ -1125,7 +1133,7 @@ class _OwnerRequestsSheetState extends State<_OwnerRequestsSheet> {
     final cols = await db.rawQuery('PRAGMA table_info(rental_requests)');
     final has = cols.any((m) => (m['name'] as String).toLowerCase() == 'rejection_reason');
     if (!has) {
-      await db.execute('ALTER TABLE rental_requests ADD COLUMN rejection_reason TEXT;');
+      await db.execute('ALTER TABLE rental_requests ADD COLUMN rejection_reason TEXT.');
     }
   }
 
@@ -1189,14 +1197,16 @@ class _OwnerRequestsSheetState extends State<_OwnerRequestsSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(width: 46, height: 5,
+          Container(
+            width: 46,
+            height: 5,
             decoration: BoxDecoration(
-              color: Colors.grey[400], borderRadius: BorderRadius.circular(3),
+              color: Colors.grey[400],
+              borderRadius: BorderRadius.circular(3),
             ),
           ),
           const SizedBox(height: 12),
-          Text('Incoming Requests',
-              style: Theme.of(context).textTheme.titleMedium),
+          Text('Incoming Requests', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 12),
           FutureBuilder<List<Map<String, dynamic>>>(
             future: _load(),
@@ -1247,15 +1257,17 @@ class _OwnerRequestsSheetState extends State<_OwnerRequestsSheet> {
                         trailing: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(status.toUpperCase(),
-                                style: TextStyle(
-                                  color: status == 'pending'
-                                      ? Colors.orange
-                                      : status == 'accepted'
-                                      ? Colors.green
-                                      : Colors.red,
-                                  fontWeight: FontWeight.w700,
-                                )),
+                            Text(
+                              status.toUpperCase(),
+                              style: TextStyle(
+                                color: status == 'pending'
+                                    ? Colors.orange
+                                    : status == 'accepted'
+                                    ? Colors.green
+                                    : Colors.red,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                             const SizedBox(height: 6),
                             if (status == 'pending')
                               Row(
@@ -1400,27 +1412,58 @@ class _EquipmentCard extends StatelessWidget {
                     style: const TextStyle(color: Colors.black87),
                   ),
                   const SizedBox(height: 6),
+
+                  // FIX: align price/location neatly on one line with ellipsis
                   Row(
                     children: [
                       Icon(Icons.currency_rupee, size: 16, color: cs.primary),
-                      Text('$rate/day   ·  '),
+                      const SizedBox(width: 2),
+                      Text('$rate/day'),
+                      const SizedBox(width: 10),
                       const Icon(Icons.place, size: 16, color: Colors.grey),
-                      Flexible(child: Text(location, overflow: TextOverflow.ellipsis)),
+                      const SizedBox(width: 2),
+                      Expanded(
+                        child: Text(
+                          location,
+                          overflow: TextOverflow.ellipsis,
+                          softWrap: false,
+                        ),
+                      ),
                     ],
                   ),
+
                   const SizedBox(height: 4),
+
+                  // FIX: phone icon + number aligned on the same line
                   Row(
                     children: [
                       const Icon(Icons.phone_android, size: 16, color: Colors.grey),
                       const SizedBox(width: 4),
-                      Text(phone),
+                      Expanded(
+                        child: Text(
+                          phone,
+                          overflow: TextOverflow.ellipsis,
+                          softWrap: false,
+                        ),
+                      ),
                     ],
                   ),
                 ],
               ),
             ),
             if (trailing != null) const SizedBox(width: 8),
-            if (trailing != null) trailing!,
+            // keep trailing scalable to avoid overflow
+            if (trailing != null)
+              Flexible(
+                flex: 0,
+                child: Align(
+                  alignment: Alignment.topRight,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: trailing!,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
