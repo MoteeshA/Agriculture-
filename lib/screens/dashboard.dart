@@ -335,13 +335,16 @@ class _DashboardPageState extends State<DashboardPage> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    // Read optional args from Navigator for display name/email
+    // Read optional args from Navigator for display name/email/userId
     final args = ModalRoute.of(context)?.settings.arguments;
     String? displayName;
     String? email;
+    int userId = 1; // fallback
     if (args is Map) {
       displayName = args['displayName'] as String?;
       email = args['email'] as String?;
+      final uid = args['userId'];
+      if (uid is int) userId = uid;
     }
 
     // Fallback: email local-part → else "Farmer"
@@ -398,7 +401,11 @@ class _DashboardPageState extends State<DashboardPage> {
           const SizedBox(width: 4),
         ],
       ),
-      drawer: const _DashboardDrawer(),
+      drawer: _DashboardDrawer(
+        userId: userId,
+        friendlyName: friendlyName,
+        email: email,
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
@@ -439,8 +446,15 @@ class _DashboardPageState extends State<DashboardPage> {
                     subtitle: 'Tractor, drone…',
                     icon: Icons.agriculture_outlined,
                     color: Colors.blue,
-                    onTap: () =>
-                        DashboardPage._todo(context, 'Equipment Renting'),
+                    // ✅ Pass userId + displayName so rent shows correct lists
+                    onTap: () => Navigator.pushNamed(
+                      context,
+                      '/rent',
+                      arguments: {
+                        'userId': userId,
+                        'displayName': friendlyName,
+                      },
+                    ),
                   ),
                   FeatureItem(
                     title: 'Disease Detect',
@@ -480,10 +494,11 @@ class _DashboardPageState extends State<DashboardPage> {
 
               // Weather & Advisory Section - uses real data
               _WeatherAdvisoryCard(
-                  weatherData: _weatherData,
-                  isLoading: _isLoadingWeather,
-                  error: _weatherError,
-                  onRefresh: _getCurrentLocationWeather),
+                weatherData: _weatherData,
+                isLoading: _isLoadingWeather,
+                error: _weatherError,
+                onRefresh: _getCurrentLocationWeather,
+              ),
               const SizedBox(height: 20),
 
               // Market Updates
@@ -601,10 +616,9 @@ class _MarketTile extends StatelessWidget {
         border: Border.all(color: Colors.grey[200]!),
       ),
       child: DefaultTextStyle.merge(
-        // FIX: correct API — apply a tighter line height via style:
         style: const TextStyle(height: 1.1),
         child: Column(
-          mainAxisSize: MainAxisSize.min, // let content take just needed height
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(t.commodity, style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -689,7 +703,15 @@ class _UserChip extends StatelessWidget {
 }
 
 class _DashboardDrawer extends StatelessWidget {
-  const _DashboardDrawer();
+  final int userId;
+  final String friendlyName;
+  final String? email;
+
+  const _DashboardDrawer({
+    required this.userId,
+    required this.friendlyName,
+    required this.email,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -730,7 +752,15 @@ class _DashboardDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.agriculture_outlined),
               title: const Text('Equipment Rental'),
-              onTap: () => DashboardPage._todo(context, 'Equipment Renting'),
+              // ✅ Drawer also navigates to rent.dart with user context
+              onTap: () => Navigator.pushNamed(
+                context,
+                '/rent',
+                arguments: {
+                  'userId': userId,
+                  'displayName': friendlyName,
+                },
+              ),
             ),
             ListTile(
               leading: const Icon(Icons.local_florist_outlined),
@@ -836,7 +866,6 @@ class _QuickStatsRow extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.spaceAround,
       children: [
         _StatItem(
-          // FIX: int → string (avoid toStringAsFixed on int)
           value: (wheatPrice != null) ? '₹$wheatPrice' : '—',
           label: 'Wheat (Modal)',
           icon: Icons.trending_up,
@@ -875,7 +904,7 @@ class _StatItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 110, // a tad wider to avoid tight wraps
+      width: 110,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.grey[50],
@@ -1097,7 +1126,6 @@ class _FeatureGrid extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       shrinkWrap: true,
       crossAxisCount: 3,
-      // a touch more vertical room helps avoid tiny overflows
       childAspectRatio: 0.78,
       mainAxisSpacing: 12,
       crossAxisSpacing: 12,
@@ -1144,7 +1172,7 @@ class _FeatureTile extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
           ),
           child: Column(
-            mainAxisSize: MainAxisSize.min, // keep content flexible
+            mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(

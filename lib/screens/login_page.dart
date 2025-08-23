@@ -20,6 +20,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
+
     final email = _emailCtrl.text.trim();
     final pass = _passCtrl.text;
 
@@ -27,20 +28,30 @@ class _LoginPageState extends State<LoginPage> {
     if (!mounted) return;
 
     if (ok) {
+      // Fetch the full user so we can pass userId/displayName forward.
+      final user = await DBHelper.instance.getUserByEmail(email);
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Login successful!')),
       );
-      // Go straight to Dashboard and clear back stack
+
+      // Go straight to Dashboard and clear back stack; pass args
       Navigator.pushNamedAndRemoveUntil(
         context,
         DashboardPage.route,
             (_) => false,
+        arguments: {
+          'displayName': user?.name ?? email.split('@').first,
+          'email': user?.email ?? email,
+          'userId': user?.id ?? 1, // fallback if something unexpected
+        },
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Invalid credentials')),
       );
     }
+
     if (mounted) setState(() => _loading = false);
   }
 

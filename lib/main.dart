@@ -4,7 +4,8 @@ import 'screens/welcome.dart';
 import 'screens/login_page.dart';
 import 'screens/signup_page.dart';
 import 'screens/dashboard.dart';
-import 'screens/crop_prices.dart'; // <-- ADD THIS
+import 'screens/crop_prices.dart'; // <-- existing
+import 'screens/rent.dart';        // <-- NEW: add this
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,11 +26,12 @@ class AgriMitraApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       initialRoute: WelcomeScreen.route,
       routes: {
-        WelcomeScreen.route: (_) => const WelcomeScreen(),
-        LoginPage.route:     (_) => const LoginPage(),
-        SignupPage.route:    (_) => const SignupPage(),
-        DashboardPage.route: (_) => const DashboardPage(),
-        CropPricesPage.route: (_) => const CropPricesPage(), // <-- ADD THIS
+        WelcomeScreen.route: (_)  => const WelcomeScreen(),
+        LoginPage.route:     (_)  => const LoginPage(),
+        SignupPage.route:    (_)  => const SignupPage(),
+        DashboardPage.route: (_)  => const DashboardPage(),
+        CropPricesPage.route: (_) => const CropPricesPage(),
+        RentPage.route:      (_)  => const RentPage(),     // <-- NEW: register Rent
       },
     );
   }
