@@ -7,7 +7,8 @@ import 'screens/dashboard.dart';
 import 'screens/crop_prices.dart';
 import 'screens/rent.dart';
 import 'screens/admin.dart';
-import 'screens/disease.dart'; // <-- NEW: disease detection screen
+import 'screens/disease.dart'; // <-- disease detection screen
+import 'screens/govt.dart';    // <-- NEW: govt schemes screen
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +35,8 @@ class AgriMitraApp extends StatelessWidget {
         DashboardPage.route: (_)   => const DashboardPage(),
         CropPricesPage.route: (_)  => const CropPricesPage(),
         RentPage.route:      (_)   => const RentPage(),
-        DiseasePage.route:   (_)   => const DiseasePage(), // ✅ fixed
+        DiseasePage.route:   (_)   => const DiseasePage(),
+        GovtPage.route:      (_)   => const GovtPage(),   // ✅ NEW
         '/admin':            (_)   => const AdminPage(),
       },
     );

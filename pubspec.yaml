@@ -17,6 +17,7 @@ dependencies:
   image_picker: ^1.0.7      # pick/take leaf photos (disease.dart)
   google_generative_ai: ^0.4.4  # Gemini client (disease.dart)
   shared_preferences: ^2.2.2     # store API key locally
+  url_launcher: ^6.3.0           # <-- added for GovtPage links
 
 dev_dependencies:
   flutter_test:

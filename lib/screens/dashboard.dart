@@ -10,8 +10,11 @@ import 'package:flutter/services.dart'; // for input formatters
 import 'package:agrimitra/services/db_helper.dart';
 import 'package:sqflite/sqflite.dart';
 
-// ✅ NEW: open Disease Detect screen
+// ✅ open Disease Detect screen
 import 'package:agrimitra/screens/disease.dart';
+
+// ✅ NEW: import Govt Schemes screen
+import 'package:agrimitra/screens/govt.dart';
 
 class DashboardPage extends StatefulWidget {
   static const route = '/dashboard';
@@ -35,14 +38,15 @@ class _DashboardPageState extends State<DashboardPage> {
   String _weatherError = '';
   final String _owmApiKey = '8d6127e074f05533890c5b550b4c0e2b';
 
+  // ✅ manual city override
+  String? _manualCity; // e.g., "Hyderabad" or "Hyderabad, IN"
+
   // ---------------- Market ticker state ----------------
-  // Uses data.gov.in (same resource as your CropPricesPage)
   static const String _govApiKey =
       '579b464db66ec23bdd0000010baed15d539144fa62035eb3cd19e551';
   static const String _resourceUrl =
       'https://api.data.gov.in/resource/35985678-0d79-46b4-9ed6-6f13308a1d24';
 
-  // Show these on the dashboard ticker row
   final List<String> _dashboardCommodities = const [
     'Wheat',
     'Rice',
@@ -50,7 +54,6 @@ class _DashboardPageState extends State<DashboardPage> {
     'Soybean',
   ];
 
-  // Pin to a region (optional)
   final String? _pinState = null;  // e.g., 'Karnataka'
   final String? _pinMarket = null; // e.g., 'Binny Mill (F&V), Bangalore'
 
@@ -61,11 +64,20 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
-    _getCurrentLocationWeather();
+    _refreshWeather(); // uses manual city if set, else GPS
     _loadMarketTickers();
   }
 
   // ---------------- Weather ----------------
+
+  Future<void> _refreshWeather() async {
+    if (_manualCity != null && _manualCity!.trim().isNotEmpty) {
+      await _fetchWeatherByCity(_manualCity!.trim());
+    } else {
+      await _getCurrentLocationWeather();
+    }
+  }
+
   Future<void> _getCurrentLocationWeather() async {
     setState(() {
       _isLoadingWeather = true;
@@ -101,8 +113,15 @@ class _DashboardPageState extends State<DashboardPage> {
         return;
       }
 
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
+      Position? pos = await Geolocator.getLastKnownPosition();
+      try {
+        pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 8),
+        );
+      } catch (_) {}
+      pos ??= await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.low,
       );
 
       await _fetchWeatherData(pos.latitude, pos.longitude);
@@ -136,6 +155,78 @@ class _DashboardPageState extends State<DashboardPage> {
         _weatherError = 'Failed to load weather data: $e';
         _isLoadingWeather = false;
       });
+    }
+  }
+
+  Future<void> _fetchWeatherByCity(String cityQuery) async {
+    setState(() {
+      _isLoadingWeather = true;
+      _weatherError = '';
+    });
+    final url = Uri.parse(
+      'https://api.openweathermap.org/data/2.5/weather?q=$cityQuery&appid=$_owmApiKey&units=metric',
+    );
+    try {
+      final res = await http.get(url);
+      if (res.statusCode == 200) {
+        setState(() {
+          _weatherData = json.decode(res.body);
+          _isLoadingWeather = false;
+        });
+      } else {
+        setState(() {
+          _weatherError = 'City not found (${res.statusCode}). Try "City, IN".';
+          _isLoadingWeather = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _weatherError = 'Failed to load weather (city): $e';
+        _isLoadingWeather = false;
+      });
+    }
+  }
+
+  Future<void> _promptSetCity() async {
+    final ctrl = TextEditingController(text: _manualCity ?? '');
+    final res = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Set Location (City)'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(
+            hintText: 'e.g., Hyderabad or Hyderabad, IN',
+          ),
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => Navigator.pop(ctx, ctrl.text.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (res != null) {
+      setState(() => _manualCity = res.isEmpty ? null : res);
+      await _refreshWeather();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _manualCity == null
+                ? 'Cleared manual location. Using GPS.'
+                : 'Using manual location: $_manualCity',
+          ),
+        ),
+      );
     }
   }
 
@@ -345,7 +436,6 @@ class _DashboardPageState extends State<DashboardPage> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    // Read optional args from Navigator for display name/email/userId
     final args = ModalRoute.of(context)?.settings.arguments;
     String? displayName;
     String? email;
@@ -357,7 +447,6 @@ class _DashboardPageState extends State<DashboardPage> {
       if (uid is int) userId = uid;
     }
 
-    // Fallback: email local-part → else "Farmer"
     final friendlyName = (displayName?.trim().isNotEmpty == true)
         ? displayName!.trim()
         : (email != null && email!.contains('@'))
@@ -382,7 +471,6 @@ class _DashboardPageState extends State<DashboardPage> {
             onSelected: (value) async {
               switch (value) {
                 case 'profile':
-                // Open settings page from menu
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -391,7 +479,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   );
                   break;
                 case 'refresh':
-                  _getCurrentLocationWeather();
+                  await _refreshWeather();
                   await _loadMarketTickers();
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Refreshing...')),
@@ -426,11 +514,9 @@ class _DashboardPageState extends State<DashboardPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Welcome Card
               _WelcomeCard(friendlyName: friendlyName),
               const SizedBox(height: 20),
 
-              // Quick Stats Row (now dynamic)
               _QuickStatsRow(
                 wheatPrice: wheat,
                 temperatureC: tempC,
@@ -438,7 +524,6 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
               const SizedBox(height: 20),
 
-              // Main Features Grid
               Text(
                 'Features',
                 style: theme.textTheme.titleLarge?.copyWith(
@@ -460,7 +545,6 @@ class _DashboardPageState extends State<DashboardPage> {
                     subtitle: 'Tractor, drone…',
                     icon: Icons.agriculture_outlined,
                     color: Colors.blue,
-                    // ✅ Pass userId + displayName so rent shows correct lists
                     onTap: () => Navigator.pushNamed(
                       context,
                       '/rent',
@@ -475,7 +559,6 @@ class _DashboardPageState extends State<DashboardPage> {
                     subtitle: 'Upload leaf photo',
                     icon: Icons.health_and_safety_outlined,
                     color: Colors.orange,
-                    // ✅ NOW navigates to disease.dart
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const DiseasePage()),
@@ -494,8 +577,11 @@ class _DashboardPageState extends State<DashboardPage> {
                     subtitle: 'Eligibility & apply',
                     icon: Icons.assignment_turned_in_outlined,
                     color: Colors.teal,
-                    onTap: () =>
-                        DashboardPage._todo(context, 'Government Schemes'),
+                    // ✅ NOW navigates to govt.dart
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const GovtPage()),
+                    ),
                   ),
                   FeatureItem(
                     title: 'Community',
@@ -509,16 +595,20 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
               const SizedBox(height: 20),
 
-              // Weather & Advisory Section - uses real data
               _WeatherAdvisoryCard(
                 weatherData: _weatherData,
                 isLoading: _isLoadingWeather,
                 error: _weatherError,
-                onRefresh: _getCurrentLocationWeather,
+                onRefresh: _refreshWeather,
+                manualCity: _manualCity,
+                onSetCity: _promptSetCity,
+                onClearCity: () async {
+                  setState(() => _manualCity = null);
+                  await _refreshWeather();
+                },
               ),
               const SizedBox(height: 20),
 
-              // Market Updates
               Text(
                 'Market Updates',
                 style: theme.textTheme.titleLarge?.copyWith(
@@ -545,7 +635,7 @@ class _DashboardPageState extends State<DashboardPage> {
 class _MarketTicker {
   final String commodity;
   final int priceINR;
-  final double? changePct; // positive/negative if previous found
+  final double? changePct;
   final String market;
   final String state;
   final String date; // dd/MM/yyyy
@@ -626,7 +716,7 @@ class _MarketTile extends StatelessWidget {
 
     return Container(
       width: 160,
-      padding: const EdgeInsets.all(10), // tighter padding to avoid tiny overflow
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
@@ -660,7 +750,7 @@ class _MarketTile extends StatelessWidget {
             ),
             const SizedBox(height: 2),
             Text(
-              t.date, // dd/MM/yyyy from API
+              t.date,
               style: const TextStyle(fontSize: 10, color: Colors.grey),
             ),
           ],
@@ -769,7 +859,6 @@ class _DashboardDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.agriculture_outlined),
               title: const Text('Equipment Rental'),
-              // ✅ Drawer also navigates to rent.dart with user context
               onTap: () => Navigator.pushNamed(
                 context,
                 '/rent',
@@ -782,7 +871,6 @@ class _DashboardDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.local_florist_outlined),
               title: const Text('Crop Health'),
-              // ✅ NOW navigates to disease.dart
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const DiseasePage()),
@@ -791,7 +879,11 @@ class _DashboardDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.assignment_turned_in_outlined),
               title: const Text('Govt Schemes'),
-              onTap: () => DashboardPage._todo(context, 'Government Schemes'),
+              // ✅ NOW navigates to govt.dart
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const GovtPage()),
+              ),
             ),
             const Divider(),
             ListTile(
@@ -878,9 +970,9 @@ class _WelcomeCard extends StatelessWidget {
 /* ---------------- Quick Stats (now dynamic) ---------------- */
 
 class _QuickStatsRow extends StatelessWidget {
-  final int? wheatPrice;     // INR per modal price (latest)
-  final int? temperatureC;   // from OWM
-  final double? windKmh;     // from OWM (converted)
+  final int? wheatPrice;
+  final int? temperatureC;
+  final double? windKmh;
 
   const _QuickStatsRow({
     this.wheatPrice,
@@ -971,11 +1063,19 @@ class _WeatherAdvisoryCard extends StatelessWidget {
   final String error;
   final VoidCallback onRefresh;
 
+  // manual city controls
+  final String? manualCity;
+  final VoidCallback onSetCity;
+  final VoidCallback onClearCity;
+
   const _WeatherAdvisoryCard({
     required this.weatherData,
     required this.isLoading,
     required this.error,
     required this.onRefresh,
+    this.manualCity,
+    required this.onSetCity,
+    required this.onClearCity,
   });
 
   String _getWeatherAdvisory(Map<String, dynamic>? weatherData) {
@@ -1024,6 +1124,8 @@ class _WeatherAdvisoryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool usingCity = (manualCity != null && manualCity!.trim().isNotEmpty);
+
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1032,6 +1134,7 @@ class _WeatherAdvisoryCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Header Row with actions
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -1047,14 +1150,55 @@ class _WeatherAdvisoryCard extends StatelessWidget {
                     ),
                   ],
                 ),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: onRefresh,
-                  iconSize: 20,
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Set Location (City)',
+                      icon: const Icon(Icons.location_on_outlined),
+                      onPressed: onSetCity,
+                      iconSize: 20,
+                    ),
+                    if (usingCity)
+                      IconButton(
+                        tooltip: 'Clear manual location',
+                        icon: const Icon(Icons.close),
+                        onPressed: onClearCity,
+                        iconSize: 20,
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: onRefresh,
+                      iconSize: 20,
+                    ),
+                  ],
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+
+            Row(
+              children: [
+                Chip(
+                  label: Text(
+                    usingCity
+                        ? 'Location: ${manualCity!}'
+                        : 'Location: GPS',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+                const SizedBox(width: 8),
+                if (weatherData != null && weatherData!['name'] != null)
+                  Chip(
+                    label: Text(
+                      'City: ${weatherData!['name']}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
 
             if (isLoading)
               const Center(child: CircularProgressIndicator())
@@ -1101,6 +1245,13 @@ class _WeatherAdvisoryCard extends StatelessWidget {
                         Text('Wind: ${(weatherData!['wind']['speed'] as num)} m/s'),
                       ],
                     ),
+                    const SizedBox(height: 6),
+                    if (weatherData!['coord'] != null && weatherData!['dt'] != null)
+                      Text(
+                        '(${weatherData!['coord']['lat']}, ${weatherData!['coord']['lon']}) • '
+                            '${DateTime.fromMillisecondsSinceEpoch((weatherData!['dt'] as int) * 1000).toLocal()}',
+                        style: const TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
                     const SizedBox(height: 12),
                   ],
                 )
@@ -1244,11 +1395,7 @@ class _FeatureTile extends StatelessWidget {
 }
 
 /* =======================================================================
-   SETTINGS / PROFILE PAGE
-   - Saves a profile into SQLite using DBHelper.instance.database
-   - Creates tables if missing: user_profiles, certification_requests
-   - Lets the user request certification (admin can review later)
-   - ✅ KYC added: Aadhaar OR Govt ID (type + number) required before requesting certification
+   SETTINGS / PROFILE PAGE (unchanged)
    ======================================================================= */
 
 class _ProfileSettingsPage extends StatefulWidget {
@@ -1266,12 +1413,12 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
   final _fullName = TextEditingController();
   final _phone = TextEditingController();
   final _address = TextEditingController();
-  final _farmSize = TextEditingController();      // acres/hectares as text
-  final _machinery = TextEditingController();     // free text list
+  final _farmSize = TextEditingController();
+  final _machinery = TextEditingController();
 
   // --- KYC fields ---
   final _aadhaar = TextEditingController();
-  String? _govtIdType; // PAN, Voter ID, Driving License, Passport, Ration Card, Other
+  String? _govtIdType;
   final _govtIdNumber = TextEditingController();
 
   bool _loading = false;
@@ -1304,13 +1451,12 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
       CREATE TABLE IF NOT EXISTS certification_requests(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
-        status TEXT,              -- pending | approved | rejected
-        details TEXT,             -- JSON blob (profile snapshot / notes)
+        status TEXT,
+        details TEXT,
         created_at TEXT
       );
     ''');
 
-    // Add KYC columns if missing
     await _ensureColumn(db, 'user_profiles', 'aadhar_number', 'TEXT');
     await _ensureColumn(db, 'user_profiles', 'govt_id_type', 'TEXT');
     await _ensureColumn(db, 'user_profiles', 'govt_id_number', 'TEXT');
@@ -1403,7 +1549,6 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
       'updated_at': DateTime.now().toIso8601String(),
     };
 
-    // UPSERT by primary key
     await db.insert(
       'user_profiles',
       data,
@@ -1418,7 +1563,6 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
   }
 
   Future<void> _requestCertification() async {
-    // Enforce KYC before allowing a request
     if (!_kycComplete()) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1434,7 +1578,6 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
       );
       return;
     }
-    // Save profile first (so details are up-to-date)
     await _saveProfile();
 
     await _ensureTables();
@@ -1533,7 +1676,6 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Aadhaar OR Govt ID
                       TextFormField(
                         controller: _aadhaar,
                         decoration: const InputDecoration(
@@ -1545,7 +1687,7 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
                         inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(12)],
                         validator: (v) {
                           final digits = (v ?? '').replaceAll(RegExp(r'\\D'), '');
-                          if (digits.isEmpty) return null; // optional if Govt ID provided
+                          if (digits.isEmpty) return null;
                           return digits.length == 12 ? null : 'Must be exactly 12 digits';
                         },
                       ),
@@ -1584,9 +1726,8 @@ class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
                               validator: (v) {
                                 final hasType = _govtIdType != null && _govtIdType!.trim().isNotEmpty;
                                 final hasNum = (v ?? '').trim().isNotEmpty;
-                                if (!hasType && !hasNum) return null; // optional if Aadhaar present
+                                if (!hasType && !hasNum) return null;
                                 if (hasType && !hasNum) return 'Enter ID number';
-                                // simple PAN pattern check if selected
                                 if ((_govtIdType ?? '') == 'PAN') {
                                   final panOk = RegExp(r'^[A-Z]{5}[0-9]{4}[A-Z]$').hasMatch((v ?? '').toUpperCase());
                                   if (!panOk) return 'Invalid PAN format';
