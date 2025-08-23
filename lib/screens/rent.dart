@@ -1,7 +1,8 @@
 // lib/screens/rent.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:agrimitra/services/db_helper.dart'; // <- unified DB layer
+import 'package:agrimitra/services/db_helper.dart'; // unified DB layer
+import 'package:sqflite/sqflite.dart'; // for tiny lookups we do locally
 
 class RentPage extends StatefulWidget {
   static const route = '/rent';
@@ -17,12 +18,15 @@ class _RentPageState extends State<RentPage> with SingleTickerProviderStateMixin
 
   int _userId = 1; // fallback if not provided via arguments
   String _displayName = 'User';
+  int _lastUnreadShown = -1; // for one-time "you have X notifications" popup
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _dbInit = _initDb();
+    // After DB ready, show a heads-up if there are unread notifications
+    _dbInit.then((_) => _maybeShowUnreadSnack());
   }
 
   @override
@@ -41,6 +45,31 @@ class _RentPageState extends State<RentPage> with SingleTickerProviderStateMixin
     await DBHelper.instance.database; // ensure DB + tables ready
   }
 
+  Future<int> _fetchUnreadCount() async {
+    final db = await DBHelper.instance.database;
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM notifications WHERE user_id=? AND is_read=0',
+      [_userId],
+    );
+    final v = rows.isNotEmpty ? rows.first['c'] : 0;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString()) ?? 0;
+  }
+
+  Future<void> _maybeShowUnreadSnack() async {
+    if (!mounted) return;
+    final unread = await _fetchUnreadCount();
+    if (!mounted) return;
+    if (unread > 0 && unread != _lastUnreadShown) {
+      _lastUnreadShown = unread;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('You have $unread new notification${unread == 1 ? '' : 's'}')),
+      );
+      setState(() {}); // also refresh badge
+    }
+  }
+
   @override
   void dispose() {
     _tabController.dispose();
@@ -49,6 +78,12 @@ class _RentPageState extends State<RentPage> with SingleTickerProviderStateMixin
 
   void _toast(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _refreshAll() {
+    // used by child tabs to refresh the badge after actions
+    setState(() {});
+    _maybeShowUnreadSnack();
   }
 
   @override
@@ -69,10 +104,45 @@ class _RentPageState extends State<RentPage> with SingleTickerProviderStateMixin
             backgroundColor: cs.primaryContainer,
             bottom: TabBar(
               controller: _tabController,
-              tabs: const [
-                Tab(icon: Icon(Icons.store_mall_directory_outlined), text: 'Give on Rent'),
-                Tab(icon: Icon(Icons.shopping_cart_outlined), text: 'Take on Rent'),
-                Tab(icon: Icon(Icons.notifications_outlined), text: 'Notifications'),
+              tabs: [
+                const Tab(icon: Icon(Icons.store_mall_directory_outlined), text: 'Give on Rent'),
+                const Tab(icon: Icon(Icons.shopping_cart_outlined), text: 'Take on Rent'),
+                // Notifications tab with badge
+                Tab(
+                  icon: FutureBuilder<int>(
+                    future: _fetchUnreadCount(),
+                    builder: (ctx, snap) {
+                      final count = snap.data ?? 0;
+                      return Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          const Icon(Icons.notifications_outlined),
+                          if (count > 0)
+                            Positioned(
+                              right: -6,
+                              top: -6,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: Colors.red,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  count > 99 ? '99+' : '$count',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                  text: 'Notifications',
+                ),
               ],
             ),
           ),
@@ -81,7 +151,7 @@ class _RentPageState extends State<RentPage> with SingleTickerProviderStateMixin
             children: [
               _GiveOnRentTab(userId: _userId, onToast: _toast),
               _TakeOnRentTab(userId: _userId, onToast: _toast),
-              _NotificationsTab(userId: _userId, onToast: _toast),
+              _NotificationsTab(userId: _userId, onToast: _toast, onChanged: _refreshAll),
             ],
           ),
         );
@@ -343,11 +413,33 @@ class _TakeOnRentTab extends StatefulWidget {
 class _TakeOnRentTabState extends State<_TakeOnRentTab> {
   final _q = TextEditingController();
 
+  /// Load ids of equipment this user has already requested (pending/accepted)
+  Future<Set<int>> _myRequestedEquipmentIds() async {
+    final db = await DBHelper.instance.database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT equipment_id FROM rental_requests
+      WHERE requester_id = ? AND status IN ('pending','accepted')
+      ''',
+      [widget.userId],
+    );
+    return rows
+        .map((r) => (r['equipment_id'] as int?) ?? 0)
+        .where((id) => id != 0)
+        .toSet();
+  }
+
   Future<List<Map<String, dynamic>>> _loadAvailable() async {
     final all = await DBHelper.instance.availableEquipmentExcept(widget.userId);
+    final requested = await _myRequestedEquipmentIds();
+
+    // Hide things I've already requested (this is your "vanish into waitlist")
+    final filtered = all.where((e) => !requested.contains(e['id'] as int)).toList();
+
     final query = _q.text.trim().toLowerCase();
-    if (query.isEmpty) return all;
-    return all.where((e) {
+    if (query.isEmpty) return filtered;
+
+    return filtered.where((e) {
       final t = (e['title'] ?? '').toString().toLowerCase();
       final d = (e['description'] ?? '').toString().toLowerCase();
       final loc = (e['location'] ?? '').toString().toLowerCase();
@@ -362,10 +454,10 @@ class _TakeOnRentTabState extends State<_TakeOnRentTab> {
       builder: (_) => _RequestSheet(
         equipment: equip,
         requesterId: widget.userId,
-        onSubmitted: () {
+        onSubmitted: () async {
           Navigator.pop(context);
           widget.onToast('Request sent to owner!');
-          setState(() {});
+          setState(() {}); // triggers _loadAvailable(), which will now hide it
         },
       ),
     );
@@ -586,15 +678,40 @@ class _RequestSheetState extends State<_RequestSheet> {
 class _NotificationsTab extends StatefulWidget {
   final int userId;
   final void Function(String) onToast;
-  const _NotificationsTab({required this.userId, required this.onToast});
+  final VoidCallback onChanged; // to refresh badge in parent
+  const _NotificationsTab({required this.userId, required this.onToast, required this.onChanged});
 
   @override
   State<_NotificationsTab> createState() => _NotificationsTabState();
 }
 
 class _NotificationsTabState extends State<_NotificationsTab> {
-  Future<List<Map<String, dynamic>>> _load() {
+  Future<List<Map<String, dynamic>>> _loadNotifs() {
     return DBHelper.instance.notificationsFor(widget.userId);
+  }
+
+  /// "Waitlist": my own requests (most recent first)
+  Future<List<Map<String, dynamic>>> _loadMyRequests() async {
+    final db = await DBHelper.instance.database;
+    return db.rawQuery('''
+      SELECT rr.id as request_id, rr.status, rr.created_at, rr.start_date, rr.end_date,
+             e.title, e.image_url, e.daily_rate
+      FROM rental_requests rr
+      JOIN equipment e ON e.id = rr.equipment_id
+      WHERE rr.requester_id = ?
+      ORDER BY rr.created_at DESC
+    ''', [widget.userId]);
+  }
+
+  /// Resolve a user name by id for nicer notification subtitles.
+  final Map<int, String> _nameCache = {};
+  Future<String> _nameForUser(int id) async {
+    if (_nameCache.containsKey(id)) return _nameCache[id]!;
+    final db = await DBHelper.instance.database;
+    final rows = await db.query('users', columns: ['name'], where: 'id=?', whereArgs: [id], limit: 1);
+    final name = rows.isNotEmpty ? (rows.first['name'] as String? ?? 'User $id') : 'User $id';
+    _nameCache[id] = name;
+    return name;
   }
 
   Future<void> _openOwnerInbox() async {
@@ -608,15 +725,33 @@ class _NotificationsTabState extends State<_NotificationsTab> {
           Navigator.pop(context);
           widget.onToast('Updated request status');
           setState(() {});
+          widget.onChanged();
         },
       ),
     );
   }
 
+  Future<void> _acceptFromNotif(int requestId, int notifId) async {
+    await DBHelper.instance.updateRequestStatus(requestId, 'accepted', widget.userId);
+    await DBHelper.instance.markNotificationRead(notifId);
+    widget.onToast('Accepted — you\'ll coordinate with the renter.');
+    setState(() {});
+    widget.onChanged();
+  }
+
+  Future<void> _markRead(int notifId) async {
+    await DBHelper.instance.markNotificationRead(notifId);
+    setState(() {});
+    widget.onChanged();
+  }
+
   @override
   Widget build(BuildContext context) {
     return RefreshIndicator(
-      onRefresh: () async => setState(() {}),
+      onRefresh: () async {
+        setState(() {});
+        widget.onChanged();
+      },
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
@@ -636,9 +771,64 @@ class _NotificationsTabState extends State<_NotificationsTab> {
                 )
               ],
             ),
-            const SizedBox(height: 10),
+
+            // --- Waitlist: my own requests ---
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text('My Requests (Waitlist)',
+                  style: Theme.of(context).textTheme.titleSmall),
+            ),
+            const SizedBox(height: 8),
             FutureBuilder<List<Map<String, dynamic>>>(
-              future: _load(),
+              future: _loadMyRequests(),
+              builder: (ctx, snap) {
+                if (!snap.hasData) {
+                  return const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: LinearProgressIndicator(minHeight: 2),
+                  );
+                }
+                final reqs = snap.data!;
+                if (reqs.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: reqs.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, i) {
+                    final r = reqs[i];
+                    final status = (r['status'] ?? 'pending').toString();
+                    Color c = Colors.orange;
+                    if (status == 'accepted') c = Colors.green;
+                    if (status == 'rejected') c = Colors.red;
+                    return Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: Colors.grey[300]!),
+                      ),
+                      child: ListTile(
+                        leading: const Icon(Icons.hourglass_bottom_outlined),
+                        title: Text('${r['title']}'),
+                        subtitle: Text(' ${r['start_date']} → ${r['end_date']}'),
+                        trailing: Text(status.toUpperCase(),
+                            style: TextStyle(color: c, fontWeight: FontWeight.w700)),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+            const SizedBox(height: 14),
+            const Divider(height: 1),
+            const SizedBox(height: 14),
+
+            // --- Actual notifications ---
+            FutureBuilder<List<Map<String, dynamic>>>(
+              future: _loadNotifs(),
               builder: (ctx, snap) {
                 if (!snap.hasData) {
                   return const Padding(
@@ -667,25 +857,68 @@ class _NotificationsTabState extends State<_NotificationsTab> {
                     final created = (n['created_at'] ?? '').toString();
 
                     String title;
-                    String subtitle;
+                    Widget subtitleWidget;
+                    Widget? trailing;
 
                     if (type == 'request_received') {
                       title = 'New rental request for "${payload['title'] ?? 'Equipment'}"';
-                      subtitle =
-                      'From user ${payload['requester_id']} • ${payload['start_date']} → ${payload['end_date']}';
+                      final requesterId = (payload['requester_id'] ?? 0) is int
+                          ? payload['requester_id'] as int
+                          : int.tryParse((payload['requester_id'] ?? '0').toString()) ?? 0;
+                      final requestId = (payload['request_id'] ?? 0) is int
+                          ? payload['request_id'] as int
+                          : int.tryParse((payload['request_id'] ?? '0').toString()) ?? 0;
+
+                      subtitleWidget = FutureBuilder<String>(
+                        future: _nameForUser(requesterId),
+                        builder: (ctx, snapName) {
+                          final name = snapName.data ?? 'User $requesterId';
+                          return Text('From $name • ${payload['start_date']} → ${payload['end_date']}');
+                        },
+                      );
+
+                      // Actions: Accept or Later (mark read)
+                      trailing = Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton(
+                            onPressed: () => _acceptFromNotif(requestId, n['id'] as int),
+                            child: const Text('Accept'),
+                          ),
+                          const SizedBox(width: 6),
+                          if (!isRead)
+                            TextButton(
+                              onPressed: () => _markRead(n['id'] as int),
+                              child: const Text('Later'),
+                            ),
+                        ],
+                      );
                     } else if (type == 'request_update') {
                       title = 'Request update: ${payload['status']}';
-                      subtitle = 'For "${payload['title'] ?? 'Equipment'}"';
+                      subtitleWidget = Text('For "${payload['title'] ?? 'Equipment'}"');
+                      trailing = isRead
+                          ? null
+                          : TextButton(
+                        onPressed: () => _markRead(n['id'] as int),
+                        child: const Text('Mark read'),
+                      );
                     } else {
                       title = 'Notification';
-                      subtitle = created;
+                      subtitleWidget = Text(created);
+                      trailing = isRead
+                          ? null
+                          : TextButton(
+                        onPressed: () => _markRead(n['id'] as int),
+                        child: const Text('Mark read'),
+                      );
                     }
 
                     return Card(
                       elevation: 0,
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          side: BorderSide(color: isRead ? Colors.grey[300]! : Colors.blueAccent)),
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: isRead ? Colors.grey[300]! : Colors.blueAccent),
+                      ),
                       child: ListTile(
                         leading: Icon(
                           type == 'request_received'
@@ -694,16 +927,8 @@ class _NotificationsTabState extends State<_NotificationsTab> {
                           color: isRead ? Colors.grey : Colors.blueAccent,
                         ),
                         title: Text(title),
-                        subtitle: Text(subtitle),
-                        trailing: isRead
-                            ? null
-                            : TextButton(
-                          onPressed: () async {
-                            await DBHelper.instance.markNotificationRead(n['id'] as int);
-                            setState(() {});
-                          },
-                          child: const Text('Mark read'),
-                        ),
+                        subtitle: subtitleWidget,
+                        trailing: trailing,
                       ),
                     );
                   },
@@ -893,8 +1118,11 @@ class _EquipmentCard extends StatelessWidget {
               ),
               clipBehavior: Clip.antiAlias,
               child: (imageUrl.isNotEmpty)
-                  ? Image.network(imageUrl, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const Icon(Icons.agriculture, size: 28))
+                  ? Image.network(
+                imageUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const Icon(Icons.agriculture, size: 28),
+              )
                   : const Icon(Icons.agriculture, size: 28),
             ),
             const SizedBox(width: 12),
