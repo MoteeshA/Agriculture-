@@ -67,7 +67,7 @@ The solution is available as both a **Flutter Mobile App** and a **React Web Pla
 ### 🔹 Backend (Flask / FastAPI)
 ```bash
 # Clone repo
-git clone https://github.com/your-repo/agrimitra.git
+git clone https://github.com/MoteeshA/AgriMitra
 
 cd agrimitra/backend             # Navigate to backend folder
 python -m venv venv              # Create virtual environment (recommended)
