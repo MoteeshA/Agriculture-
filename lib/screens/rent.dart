@@ -197,6 +197,7 @@ class _GiveOnRentTabState extends State<_GiveOnRentTab> {
       'image_url': _imageUrl.text.trim(),
       'available': 1,
       'created_at': DateTime.now().toIso8601String(),
+      // no need to pass cert_* here; DB has defaults
     });
 
     widget.onToast('Equipment listed!');
@@ -207,6 +208,46 @@ class _GiveOnRentTabState extends State<_GiveOnRentTab> {
     _phone.clear();
     _imageUrl.clear();
     setState(() {}); // refresh list
+  }
+
+  Future<void> _removeListing(Map<String, dynamic> e) async {
+    final id = (e['id'] as int?) ?? 0;
+    if (id == 0) return;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove listing?'),
+        content: Text(
+          'This will remove "${(e['title'] ?? '').toString()}" from the marketplace.\n'
+              'Any pending requests will be cleared.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      final db = await DBHelper.instance.database;
+      await db.transaction((txn) async {
+        // Clear related requests to avoid orphaned rows / joins.
+        await txn.delete('rental_requests', where: 'equipment_id=?', whereArgs: [id]);
+        // Remove the equipment (owner-guarded).
+        await txn.delete('equipment', where: 'id=? AND owner_id=?', whereArgs: [id, widget.userId]);
+      });
+      widget.onToast('Listing removed');
+      setState(() {}); // refresh list
+    } catch (err) {
+      widget.onToast('Failed to remove: $err');
+    }
   }
 
   @override
@@ -351,6 +392,7 @@ class _GiveOnRentTabState extends State<_GiveOnRentTab> {
                   itemBuilder: (_, i) {
                     final e = items[i];
                     final available = (e['available'] as int) == 1;
+                    final certStatus = (e['cert_status'] ?? 'none').toString(); // ★
                     return _EquipmentCard(
                       title: (e['title'] ?? '').toString(),
                       desc: (e['description'] ?? '').toString(),
@@ -358,6 +400,7 @@ class _GiveOnRentTabState extends State<_GiveOnRentTab> {
                       location: (e['location'] ?? '').toString(),
                       phone: (e['phone'] ?? '').toString(),
                       imageUrl: (e['image_url'] ?? '').toString(),
+                      certStatus: certStatus, // ★
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -383,6 +426,11 @@ class _GiveOnRentTabState extends State<_GiveOnRentTab> {
                                   .toggleEquipmentAvailability(e['id'] as int, !available);
                               setState(() {});
                             },
+                          ),
+                          IconButton(
+                            tooltip: 'Remove listing',
+                            icon: const Icon(Icons.delete_outline, color: Colors.red),
+                            onPressed: () => _removeListing(e),
                           ),
                         ],
                       ),
@@ -512,6 +560,7 @@ class _TakeOnRentTabState extends State<_TakeOnRentTab> {
                   separatorBuilder: (_, __) => const SizedBox(height: 10),
                   itemBuilder: (_, i) {
                     final e = items[i];
+                    final certStatus = (e['cert_status'] ?? 'none').toString(); // ★
                     return _EquipmentCard(
                       title: (e['title'] ?? '').toString(),
                       desc: (e['description'] ?? '').toString(),
@@ -519,6 +568,7 @@ class _TakeOnRentTabState extends State<_TakeOnRentTab> {
                       location: (e['location'] ?? '').toString(),
                       phone: (e['phone'] ?? '').toString(),
                       imageUrl: (e['image_url'] ?? '').toString(),
+                      certStatus: certStatus, // ★
                       trailing: FilledButton.icon(
                         onPressed: () => _openRequestSheet(e),
                         icon: const Icon(Icons.send),
@@ -714,6 +764,44 @@ class _NotificationsTabState extends State<_NotificationsTab> {
     return name;
   }
 
+  /// Ensure column exists (used for rejection reason).
+  Future<void> _ensureColumn(String table, String col, String type) async {
+    final db = await DBHelper.instance.database;
+    final cols = await db.rawQuery('PRAGMA table_info($table)');
+    final has = cols.any((m) => (m['name'] as String).toLowerCase() == col.toLowerCase());
+    if (!has) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $col $type;');
+    }
+  }
+
+  Future<String?> _rejectionReasonForRequest(int requestId) async {
+    final db = await DBHelper.instance.database;
+    await _ensureColumn('rental_requests', 'rejection_reason', 'TEXT');
+    final rows = await db.query('rental_requests',
+        columns: ['rejection_reason'], where: 'id=?', whereArgs: [requestId], limit: 1);
+    if (rows.isNotEmpty) {
+      final r = rows.first['rejection_reason'];
+      if (r is String && r.trim().isNotEmpty) return r.trim();
+    }
+    return null;
+  }
+
+  Future<String?> _certNoteForEquipment(int equipmentId) async {
+    final db = await DBHelper.instance.database;
+    // Try to read cert_note if it exists.
+    try {
+      final rows = await db.query('equipment',
+          columns: ['cert_note'], where: 'id=?', whereArgs: [equipmentId], limit: 1);
+      if (rows.isNotEmpty) {
+        final v = rows.first['cert_note'];
+        if (v is String && v.trim().isNotEmpty) return v.trim();
+      }
+    } catch (_) {
+      // if the column doesn't exist, ignore
+    }
+    return null;
+  }
+
   Future<void> _openOwnerInbox() async {
     // Owner can inspect incoming requests and accept/reject.
     showModalBottomSheet(
@@ -804,6 +892,9 @@ class _NotificationsTabState extends State<_NotificationsTab> {
                     Color c = Colors.orange;
                     if (status == 'accepted') c = Colors.green;
                     if (status == 'rejected') c = Colors.red;
+
+                    final requestId = (r['request_id'] as int?) ?? 0;
+
                     return Card(
                       elevation: 0,
                       shape: RoundedRectangleBorder(
@@ -813,7 +904,28 @@ class _NotificationsTabState extends State<_NotificationsTab> {
                       child: ListTile(
                         leading: const Icon(Icons.hourglass_bottom_outlined),
                         title: Text('${r['title']}'),
-                        subtitle: Text(' ${r['start_date']} → ${r['end_date']}'),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(' ${r['start_date']} → ${r['end_date']}'),
+                            if (status == 'rejected')
+                              FutureBuilder<String?>(
+                                future: _rejectionReasonForRequest(requestId),
+                                builder: (ctx, rs) {
+                                  final reason = (rs.data ?? '').trim();
+                                  return reason.isEmpty
+                                      ? const SizedBox.shrink()
+                                      : Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Text(
+                                      'Reason: $reason',
+                                      style: const TextStyle(color: Colors.red),
+                                    ),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
                         trailing: Text(status.toUpperCase(),
                             style: TextStyle(color: c, fontWeight: FontWeight.w700)),
                       ),
@@ -894,8 +1006,59 @@ class _NotificationsTabState extends State<_NotificationsTab> {
                         ],
                       );
                     } else if (type == 'request_update') {
-                      title = 'Request update: ${payload['status']}';
-                      subtitleWidget = Text('For "${payload['title'] ?? 'Equipment'}"');
+                      final status = (payload['status'] ?? '').toString();
+                      title = 'Request update: $status';
+                      final requestId = (payload['request_id'] is int)
+                          ? payload['request_id'] as int
+                          : int.tryParse('${payload['request_id'] ?? 0}') ?? 0;
+                      final payloadReason = (payload['reason'] ?? '').toString().trim();
+
+                      if (status.toLowerCase() == 'rejected') {
+                        // Show reason from payload, else fetch from rental_requests
+                        subtitleWidget = FutureBuilder<String?>(
+                          future: payloadReason.isNotEmpty
+                              ? Future.value(payloadReason)
+                              : _rejectionReasonForRequest(requestId),
+                          builder: (ctx, rs) {
+                            final r = (rs.data ?? '').trim();
+                            final reasonLine = r.isEmpty ? '' : '\nReason: $r';
+                            return Text('For "${payload['title'] ?? 'Equipment'}"$reasonLine');
+                          },
+                        );
+                      } else {
+                        subtitleWidget = Text('For "${payload['title'] ?? 'Equipment'}"');
+                      }
+
+                      trailing = isRead
+                          ? null
+                          : TextButton(
+                        onPressed: () => _markRead(n['id'] as int),
+                        child: const Text('Mark read'),
+                      );
+                    } else if (type == 'cert_update') { // ★ support cert notifications with reason
+                      final status = (payload['cert_status'] ?? '').toString();
+                      title = 'Certification: ${status.isEmpty ? 'Update' : status}';
+
+                      if (status.toLowerCase() == 'rejected') {
+                        final notePayload = ((payload['note'] ?? payload['cert_note']) ?? '').toString().trim();
+                        final equipmentId = (payload['equipment_id'] is int)
+                            ? payload['equipment_id'] as int
+                            : int.tryParse('${payload['equipment_id'] ?? 0}') ?? 0;
+
+                        subtitleWidget = FutureBuilder<String?>(
+                          future: notePayload.isNotEmpty
+                              ? Future.value(notePayload)
+                              : (equipmentId > 0 ? _certNoteForEquipment(equipmentId) : Future.value(null)),
+                          builder: (ctx, rs) {
+                            final note = (rs.data ?? '').trim();
+                            final reasonLine = note.isEmpty ? '' : '\nReason: $note';
+                            return Text('For "${payload['title'] ?? 'Equipment'}"$reasonLine');
+                          },
+                        );
+                      } else {
+                        subtitleWidget = Text('For "${payload['title'] ?? 'Equipment'}"');
+                      }
+
                       trailing = isRead
                           ? null
                           : TextButton(
@@ -957,8 +1120,61 @@ class _OwnerRequestsSheetState extends State<_OwnerRequestsSheet> {
     return DBHelper.instance.incomingRequestsForOwner(widget.ownerId);
   }
 
+  Future<void> _ensureRejectionColumn() async {
+    final db = await DBHelper.instance.database;
+    final cols = await db.rawQuery('PRAGMA table_info(rental_requests)');
+    final has = cols.any((m) => (m['name'] as String).toLowerCase() == 'rejection_reason');
+    if (!has) {
+      await db.execute('ALTER TABLE rental_requests ADD COLUMN rejection_reason TEXT;');
+    }
+  }
+
   Future<void> _changeStatus(int requestId, String status) async {
     await DBHelper.instance.updateRequestStatus(requestId, status, widget.ownerId);
+    widget.onAction();
+  }
+
+  Future<void> _rejectWithReason(int requestId) async {
+    final reasonCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Reject request'),
+        content: TextField(
+          controller: reasonCtrl,
+          decoration: const InputDecoration(
+            labelText: 'Reason (required)',
+            border: OutlineInputBorder(),
+          ),
+          maxLines: 2,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () {
+              if (reasonCtrl.text.trim().isEmpty) return;
+              Navigator.pop(context, true);
+            },
+            child: const Text('Reject'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    final reason = reasonCtrl.text.trim();
+    await _ensureRejectionColumn();
+    // 1) Update status via existing helper (keeps your notification flow)
+    await DBHelper.instance.updateRequestStatus(requestId, 'rejected', widget.ownerId);
+    // 2) Persist the reason so renter can see it later
+    final db = await DBHelper.instance.database;
+    await db.update(
+      'rental_requests',
+      {'rejection_reason': reason},
+      where: 'id=?',
+      whereArgs: [requestId],
+    );
     widget.onAction();
   }
 
@@ -1041,21 +1257,22 @@ class _OwnerRequestsSheetState extends State<_OwnerRequestsSheet> {
                                   fontWeight: FontWeight.w700,
                                 )),
                             const SizedBox(height: 6),
-                            if (status == 'pending') Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Accept',
-                                  onPressed: () => _changeStatus(r['request_id'] as int, 'accepted'),
-                                  icon: const Icon(Icons.check_circle, color: Colors.green),
-                                ),
-                                IconButton(
-                                  tooltip: 'Reject',
-                                  onPressed: () => _changeStatus(r['request_id'] as int, 'rejected'),
-                                  icon: const Icon(Icons.cancel, color: Colors.red),
-                                ),
-                              ],
-                            ),
+                            if (status == 'pending')
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Accept',
+                                    onPressed: () => _changeStatus(r['request_id'] as int, 'accepted'),
+                                    icon: const Icon(Icons.check_circle, color: Colors.green),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Reject (add reason)',
+                                    onPressed: () => _rejectWithReason(r['request_id'] as int),
+                                    icon: const Icon(Icons.cancel, color: Colors.red),
+                                  ),
+                                ],
+                              ),
                           ],
                         ),
                       ),
@@ -1081,6 +1298,7 @@ class _EquipmentCard extends StatelessWidget {
   final String location;
   final String phone;
   final String imageUrl;
+  final String? certStatus; // ★ certification status (optional)
   final Widget? trailing;
 
   const _EquipmentCard({
@@ -1090,8 +1308,14 @@ class _EquipmentCard extends StatelessWidget {
     required this.location,
     required this.phone,
     required this.imageUrl,
+    this.certStatus, // ★
     this.trailing,
   });
+
+  bool get _isCertified {
+    final s = (certStatus ?? 'none').toLowerCase();
+    return s == 'verified' || s == 'auto_verified';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1131,8 +1355,43 @@ class _EquipmentCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title,
-                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                  // Title row + Certified chip (if any)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (_isCertified) // ★ show certification chip
+                        Container(
+                          margin: const EdgeInsets.only(left: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.green[50],
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.green.shade200),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              Icon(Icons.verified, size: 14, color: Colors.green),
+                              SizedBox(width: 4),
+                              Text(
+                                'Certified',
+                                style: TextStyle(
+                                  color: Colors.green,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                   const SizedBox(height: 4),
                   Text(
                     desc.isEmpty ? '—' : desc,

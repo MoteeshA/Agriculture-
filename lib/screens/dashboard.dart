@@ -1,7 +1,14 @@
+// lib/screens/dashboard.dart
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter/services.dart'; // for input formatters
+
+// ⬇️ Use your existing DB layer (no DBHelper edits required for now)
+// We'll grab the Database instance from here and run small SQL helpers.
+import 'package:agrimitra/services/db_helper.dart';
+import 'package:sqflite/sqflite.dart';
 
 class DashboardPage extends StatefulWidget {
   static const route = '/dashboard';
@@ -372,8 +379,12 @@ class _DashboardPageState extends State<DashboardPage> {
             onSelected: (value) async {
               switch (value) {
                 case 'profile':
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Profile coming soon')),
+                // Open settings page from menu
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => _ProfileSettingsPage(userId: userId),
+                    ),
                   );
                   break;
                 case 'refresh':
@@ -393,7 +404,7 @@ class _DashboardPageState extends State<DashboardPage> {
               }
             },
             itemBuilder: (ctx) => const [
-              PopupMenuItem(value: 'profile', child: Text('Profile')),
+              PopupMenuItem(value: 'profile', child: Text('Settings / Profile')),
               PopupMenuItem(value: 'refresh', child: Text('Refresh')),
               PopupMenuItem(value: 'logout', child: Text('Logout')),
             ],
@@ -776,8 +787,16 @@ class _DashboardDrawer extends StatelessWidget {
             const Divider(),
             ListTile(
               leading: const Icon(Icons.settings_outlined),
-              title: const Text('Settings'),
-              onTap: () => DashboardPage._todo(context, 'Settings'),
+              title: const Text('Settings / Profile'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => _ProfileSettingsPage(userId: userId),
+                  ),
+                );
+              },
             ),
             ListTile(
               leading: const Icon(Icons.help_outline),
@@ -1209,6 +1228,484 @@ class _FeatureTile extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/* =======================================================================
+   SETTINGS / PROFILE PAGE
+   - Saves a profile into SQLite using DBHelper.instance.database
+   - Creates tables if missing: user_profiles, certification_requests
+   - Lets the user request certification (admin can review later)
+   - ✅ KYC added: Aadhaar OR Govt ID (type + number) required before requesting certification
+   ======================================================================= */
+
+class _ProfileSettingsPage extends StatefulWidget {
+  final int userId;
+  const _ProfileSettingsPage({required this.userId});
+
+  @override
+  State<_ProfileSettingsPage> createState() => _ProfileSettingsPageState();
+}
+
+class _ProfileSettingsPageState extends State<_ProfileSettingsPage> {
+  final _formKey = GlobalKey<FormState>();
+
+  // Profile fields
+  final _fullName = TextEditingController();
+  final _phone = TextEditingController();
+  final _address = TextEditingController();
+  final _farmSize = TextEditingController();      // acres/hectares as text
+  final _machinery = TextEditingController();     // free text list
+
+  // --- KYC fields ---
+  final _aadhaar = TextEditingController();
+  String? _govtIdType; // PAN, Voter ID, Driving License, Passport, Ration Card, Other
+  final _govtIdNumber = TextEditingController();
+
+  bool _loading = false;
+  bool _saving = false;
+  bool _hasPendingCert = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadExistingProfile();
+    _checkPendingCertification();
+  }
+
+  Future<Database> _db() async => DBHelper.instance.database;
+
+  Future<void> _ensureTables() async {
+    final db = await _db();
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS user_profiles(
+        user_id INTEGER PRIMARY KEY,
+        full_name TEXT,
+        phone TEXT,
+        address TEXT,
+        farm_size TEXT,
+        machinery TEXT,
+        updated_at TEXT
+      );
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS certification_requests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        status TEXT,              -- pending | approved | rejected
+        details TEXT,             -- JSON blob (profile snapshot / notes)
+        created_at TEXT
+      );
+    ''');
+
+    // Add KYC columns if missing
+    await _ensureColumn(db, 'user_profiles', 'aadhar_number', 'TEXT');
+    await _ensureColumn(db, 'user_profiles', 'govt_id_type', 'TEXT');
+    await _ensureColumn(db, 'user_profiles', 'govt_id_number', 'TEXT');
+  }
+
+  Future<void> _ensureColumn(Database db, String table, String col, String type) async {
+    final cols = await db.rawQuery('PRAGMA table_info($table)');
+    final has = cols.any((m) => (m['name'] as String).toLowerCase() == col.toLowerCase());
+    if (!has) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $col $type;');
+    }
+  }
+
+  Future<void> _loadExistingProfile() async {
+    setState(() => _loading = true);
+    await _ensureTables();
+    final db = await _db();
+    final rows = await db.query(
+      'user_profiles',
+      where: 'user_id=?',
+      whereArgs: [widget.userId],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) {
+      final m = rows.first;
+      _fullName.text = (m['full_name'] ?? '').toString();
+      _phone.text = (m['phone'] ?? '').toString();
+      _address.text = (m['address'] ?? '').toString();
+      _farmSize.text = (m['farm_size'] ?? '').toString();
+      _machinery.text = (m['machinery'] ?? '').toString();
+
+      _aadhaar.text = (m['aadhar_number'] ?? '').toString();
+      _govtIdType = (m['govt_id_type'] ?? '').toString().isEmpty ? null : (m['govt_id_type']).toString();
+      _govtIdNumber.text = (m['govt_id_number'] ?? '').toString();
+    }
+    setState(() => _loading = false);
+  }
+
+  Future<void> _checkPendingCertification() async {
+    await _ensureTables();
+    final db = await _db();
+    final rows = await db.query(
+      'certification_requests',
+      where: 'user_id=? AND status=?',
+      whereArgs: [widget.userId, 'pending'],
+      orderBy: 'created_at DESC',
+      limit: 1,
+    );
+    setState(() {
+      _hasPendingCert = rows.isNotEmpty;
+    });
+  }
+
+  bool _validAadhaar(String? s) {
+    if (s == null) return false;
+    final digits = s.replaceAll(RegExp(r'\D'), '');
+    return digits.length == 12;
+  }
+
+  bool _hasGovtId() {
+    return (_govtIdType != null && _govtIdType!.trim().isNotEmpty) &&
+        _govtIdNumber.text.trim().isNotEmpty;
+  }
+
+  bool _kycComplete() {
+    final baseOk = _fullName.text.trim().isNotEmpty &&
+        _phone.text.trim().isNotEmpty &&
+        _address.text.trim().isNotEmpty;
+    final aadOk = _validAadhaar(_aadhaar.text);
+    final govtOk = _hasGovtId();
+    return baseOk && (aadOk || govtOk);
+  }
+
+  Future<void> _saveProfile() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _saving = true);
+    await _ensureTables();
+    final db = await _db();
+
+    final data = {
+      'user_id': widget.userId,
+      'full_name': _fullName.text.trim(),
+      'phone': _phone.text.trim(),
+      'address': _address.text.trim(),
+      'farm_size': _farmSize.text.trim(),
+      'machinery': _machinery.text.trim(),
+      'aadhar_number': _aadhaar.text.trim(),
+      'govt_id_type': (_govtIdType ?? '').trim(),
+      'govt_id_number': _govtIdNumber.text.trim(),
+      'updated_at': DateTime.now().toIso8601String(),
+    };
+
+    // UPSERT by primary key
+    await db.insert(
+      'user_profiles',
+      data,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+
+    setState(() => _saving = false);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Profile saved')),
+    );
+  }
+
+  Future<void> _requestCertification() async {
+    // Enforce KYC before allowing a request
+    if (!_kycComplete()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Complete your profile and KYC (Aadhaar OR Govt ID) before requesting certification.'),
+        ),
+      );
+      return;
+    }
+
+    if (_hasPendingCert) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Certification already requested (pending).')),
+      );
+      return;
+    }
+    // Save profile first (so details are up-to-date)
+    await _saveProfile();
+
+    await _ensureTables();
+    final db = await _db();
+
+    final details = jsonEncode({
+      'full_name': _fullName.text.trim(),
+      'phone': _phone.text.trim(),
+      'address': _address.text.trim(),
+      'farm_size': _farmSize.text.trim(),
+      'machinery': _machinery.text.trim(),
+      'aadhar_number_masked': _validAadhaar(_aadhaar.text)
+          ? 'XXXX-XXXX-${_aadhaar.text.replaceAll(RegExp(r'\\D'), '').substring(8)}'
+          : '',
+      'govt_id_type': (_govtIdType ?? '').trim(),
+      'govt_id_number': _govtIdNumber.text.trim(),
+    });
+
+    await db.insert('certification_requests', {
+      'user_id': widget.userId,
+      'status': 'pending',
+      'details': details,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+
+    setState(() => _hasPendingCert = true);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Certification request submitted for admin review')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Settings / Profile'),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              children: [
+                _SettingsSection(
+                  title: 'Personal',
+                  child: Column(
+                    children: [
+                      TextFormField(
+                        controller: _fullName,
+                        decoration: const InputDecoration(
+                          labelText: 'Full name*',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 10),
+                      TextFormField(
+                        controller: _phone,
+                        keyboardType: TextInputType.phone,
+                        decoration: const InputDecoration(
+                          labelText: 'Phone*',
+                          border: OutlineInputBorder(),
+                        ),
+                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9+\-\s]'))],
+                        validator: (v) {
+                          if (v == null || v.trim().isEmpty) return 'Required';
+                          if (v.replaceAll(RegExp(r'\\D'), '').length < 8) return 'Too short';
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      TextFormField(
+                        controller: _address,
+                        decoration: const InputDecoration(
+                          labelText: 'Address*',
+                          border: OutlineInputBorder(),
+                        ),
+                        maxLines: 2,
+                        validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _SettingsSection(
+                  title: 'Identity (KYC)',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Aadhaar OR Govt ID
+                      TextFormField(
+                        controller: _aadhaar,
+                        decoration: const InputDecoration(
+                          labelText: 'Aadhaar Number (12 digits)',
+                          border: OutlineInputBorder(),
+                          helperText: 'Provide Aadhaar OR a Government ID below',
+                        ),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(12)],
+                        validator: (v) {
+                          final digits = (v ?? '').replaceAll(RegExp(r'\\D'), '');
+                          if (digits.isEmpty) return null; // optional if Govt ID provided
+                          return digits.length == 12 ? null : 'Must be exactly 12 digits';
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              value: _govtIdType,
+                              decoration: const InputDecoration(
+                                labelText: 'Govt ID Type',
+                                border: OutlineInputBorder(),
+                              ),
+                              isExpanded: true,
+                              items: const [
+                                DropdownMenuItem(value: 'PAN', child: Text('PAN')),
+                                DropdownMenuItem(value: 'Voter ID', child: Text('Voter ID')),
+                                DropdownMenuItem(value: 'Driving License', child: Text('Driving License')),
+                                DropdownMenuItem(value: 'Passport', child: Text('Passport')),
+                                DropdownMenuItem(value: 'Ration Card', child: Text('Ration Card')),
+                                DropdownMenuItem(value: 'Other', child: Text('Other')),
+                              ],
+                              onChanged: (v) => setState(() => _govtIdType = v),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _govtIdNumber,
+                              decoration: const InputDecoration(
+                                labelText: 'Govt ID Number',
+                                border: OutlineInputBorder(),
+                              ),
+                              textCapitalization: TextCapitalization.characters,
+                              inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]'))],
+                              validator: (v) {
+                                final hasType = _govtIdType != null && _govtIdType!.trim().isNotEmpty;
+                                final hasNum = (v ?? '').trim().isNotEmpty;
+                                if (!hasType && !hasNum) return null; // optional if Aadhaar present
+                                if (hasType && !hasNum) return 'Enter ID number';
+                                // simple PAN pattern check if selected
+                                if ((_govtIdType ?? '') == 'PAN') {
+                                  final panOk = RegExp(r'^[A-Z]{5}[0-9]{4}[A-Z]$').hasMatch((v ?? '').toUpperCase());
+                                  if (!panOk) return 'Invalid PAN format';
+                                }
+                                return null;
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Builder(
+                        builder: (_) {
+                          final kycOk = _kycComplete();
+                          return Row(
+                            children: [
+                              Icon(
+                                kycOk ? Icons.verified_user : Icons.error_outline,
+                                color: kycOk ? Colors.green : Colors.orange,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                kycOk
+                                    ? 'KYC complete'
+                                    : 'KYC incomplete (need Aadhaar OR Govt ID)',
+                                style: TextStyle(
+                                  color: kycOk ? Colors.green[700] : Colors.orange[700],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _SettingsSection(
+                  title: 'Farm & Equipment',
+                  child: Column(
+                    children: [
+                      TextFormField(
+                        controller: _farmSize,
+                        decoration: const InputDecoration(
+                          labelText: 'Farm size (acres/hectares)',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextFormField(
+                        controller: _machinery,
+                        decoration: const InputDecoration(
+                          labelText: 'Machinery (comma separated)',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    icon: _saving
+                        ? const SizedBox(
+                      height: 16,
+                      width: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                        : const Icon(Icons.save_outlined),
+                    onPressed: _saving ? null : _saveProfile,
+                    label: const Text('Save Profile'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.verified_user_outlined),
+                    onPressed: _hasPendingCert ? null : _requestCertification,
+                    label: Text(
+                      _hasPendingCert
+                          ? 'Certification Request: Pending'
+                          : 'Request Certification Review',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'After you submit, an admin can review your profile and mark your equipment as "Certified".',
+                  style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey[700]),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsSection extends StatelessWidget {
+  final String title;
+  final Widget child;
+  const _SettingsSection({required this.title, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.manage_accounts_outlined),
+                const SizedBox(width: 8),
+                Text(title, style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 12),
+            child,
+          ],
         ),
       ),
     );
