@@ -64,11 +64,19 @@ The solution is available as both a **Flutter Mobile App** and a **React Web Pla
 
 ## 📂 Setup Instructions  
 
-### 🔹 Backend (Flask / FastAPI)
+### 🔹 Flutter
 ```bash
 # Clone repo
-git clone https://github.com/MoteeshA/AgriMitra
+git clone https://github.com/MoteeshA/AgriMitra.git
 
+cd AgriMitra                     # Navigate to Flutter app folder
+flutter pub get                  # Get dependencies
+flutter run                      # Run app on emulator / device
+
+### 🔹 Flutter
+```bash
+For WebApplication
+```bash
 cd agrimitra/backend             # Navigate to backend folder
 python -m venv venv              # Create virtual environment (recommended)
 venv\Scripts\activate            # Activate venv (Windows)
@@ -79,6 +87,7 @@ cd ../frontend                   # Navigate to frontend folder
 npm i                            # Install dependencies
 npm run dev                      # Start development server (Vite) / use npm start if CRA
 
-cd ../mobile                     # Navigate to Flutter app folder
-flutter pub get                  # Get dependencies
-flutter run                      # Run app on emulator / device
+
+
+
+
